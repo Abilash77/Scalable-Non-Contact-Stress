@@ -267,3 +267,26 @@ If referencing the underlying theoretical research architecture:
 
 > Maike Stoeve, et al. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence." (Pending specific publication attribution details).
 
+
+
+## Data, Models & Security
+
+This repository contains source code, model architecture definitions, preprocessing/training utilities, runtime components, and documentation.
+
+For security, licensing, privacy, and reproducibility reasons, the repository does not include:
+- private datasets
+- restricted research datasets
+- downloaded dataset archives
+- participant-level raw data
+- trained binary checkpoints
+- model weight files
+- local credentials
+- API keys
+- database passwords
+- private configuration files
+
+Users must obtain datasets separately from their official providers and comply with their licenses/EULAs. Environment variables should be used for API keys and credentials, for example:
+
+`env
+GEMINI_API_KEY=your_key_here
+`
