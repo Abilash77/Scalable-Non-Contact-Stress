@@ -3,7 +3,7 @@
 ![Status](https://img.shields.io/badge/Status-Architecture%20Test%20Only-yellow)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15%2B-orange)
-![License](https://img.shields.io/badge/License-MIT-green)
+
 
 A modular, real-time, hybrid multimodal stress detection system (RA-HMSD) capable of asynchronously processing non-contact behavioral and physiological signals (Speech, Facial, Keyboard, Handwriting, and Eye/Pupil) to classify stress.
 
@@ -267,5 +267,3 @@ If referencing the underlying theoretical research architecture:
 
 > Maike Stoeve, et al. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence." (Pending specific publication attribution details).
 
-## License
-MIT License.
