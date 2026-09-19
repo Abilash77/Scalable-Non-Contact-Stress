@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Real-Time Webcam Stress Detection</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  :root {
+    --bg:     #080c18;
+    --card:   #0f1729;
+    --border: #1e2d4a;
+    --accent: #6366f1;
+    --stress: #ef4444;
+    --calm:   #22c55e;
+    --warn:   #f59e0b;
+    --text:   #e2e8f0;
+    --muted:  #64748b;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:'Inter',sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:.9rem 2rem;
+    border-bottom:1px solid var(--border);
+    background:rgba(15,23,41,.95);
+    backdrop-filter:blur(12px);
+    position:sticky; top:0; z-index:200;
+  }
+  .logo { display:flex; align-items:center; gap:.75rem; }
+  .logo-icon {
+    width:36px; height:36px; border-radius:10px;
+    background:linear-gradient(135deg,#6366f1,#ec4899);
+    display:flex;align-items:center;justify-content:center;font-size:1.2rem;
+  }
+  .logo h1 { font-size:1rem; font-weight:700; }
+  .logo p  { font-size:.65rem; color:var(--muted); }
+
+  /* face-found indicator in header */
+  #faceIndicator {
+    display:flex; align-items:center; gap:.5rem;
+    font-size:.8rem; font-weight:600; padding:.4rem 1rem;
+    border-radius:30px; transition:all .4s;
+    border:1px solid var(--border);
+    color:var(--muted);
+  }
+  #faceIndicator.scanning {
+    color:var(--warn);
+    border-color:rgba(245,158,11,.4);
+    background:rgba(245,158,11,.08);
+  }
+  #faceIndicator.detected {
+    color:var(--calm);
+    border-color:rgba(34,197,94,.4);
+    background:rgba(34,197,94,.08);
+  }
+  .face-dot {
+    width:8px; height:8px; border-radius:50%;
+    background:currentColor; box-shadow:0 0 6px currentColor;
+  }
+  .scanning .face-dot { animation:scan-pulse 1s infinite; }
+  .detected .face-dot { animation:calm-pulse 2s infinite; }
+  @keyframes scan-pulse  { 0%,100%{opacity:1;transform:scale(1)}  50%{opacity:.3;transform:scale(.8)} }
+  @keyframes calm-pulse  { 0%,100%{opacity:1} 60%{opacity:.5} }
+
+  /* ── Main grid ── */
+  .main {
+    display:grid;
+    grid-template-columns:1fr 360px;
+    gap:1.25rem;
+    padding:1.25rem 2rem;
+    max-width:1300px; margin:0 auto;
+  }
+
+  /* ── Video section ── */
+  .video-section { display:flex; flex-direction:column; gap:1rem; }
+
+  .video-wrap {
+    position:relative;
+    border-radius:16px; overflow:hidden;
+    border:2px solid var(--border);
+    background:#000;
+    aspect-ratio:4/3;
+    transition:border-color .4s, box-shadow .5s;
+  }
+  .video-wrap.no-face  { border-color:rgba(245,158,11,.3); }
+  .video-wrap.stressed { border-color:rgba(239,68,68,.6);  box-shadow:0 0 60px rgba(239,68,68,.18); }
+  .video-wrap.calm     { border-color:rgba(34,197,94,.4);  box-shadow:0 0 40px rgba(34,197,94,.1); }
+
+  #webcamFeed {
+    width:100%; height:100%; object-fit:cover; display:block;
+  }
+
+  /* ── Scan overlay (shown when NO face) ── */
+  #scanOverlay {
+    position:absolute; inset:0;
+    display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:1rem;
+    background:rgba(8,12,24,.55);
+    backdrop-filter:blur(2px);
+    transition:opacity .5s;
+    pointer-events:none;
+  }
+  #scanOverlay.hidden { opacity:0; }
+
+  .scan-ring {
+    width:100px; height:100px; border-radius:50%;
+    border:3px solid rgba(245,158,11,.2);
+    border-top:3px solid var(--warn);
+    animation:spin 1.2s linear infinite;
+    position:relative;
+  }
+  .scan-ring::after {
+    content:'👤';
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    font-size:2rem;
+  }
+  @keyframes spin { to{transform:rotate(360deg)} }
+
+  .scan-text {
+    font-size:.9rem; font-weight:600; color:var(--warn);
+    letter-spacing:.05em;
+    text-shadow:0 2px 8px rgba(0,0,0,.8);
+  }
+  .scan-sub {
+    font-size:.7rem; color:rgba(255,255,255,.5);
+    text-shadow:0 1px 4px rgba(0,0,0,.8);
+  }
+
+  /* ── Status pill on video ── */
+  .video-pill {
+    position:absolute; top:.75rem; left:.75rem;
+    padding:.35rem .9rem; border-radius:20px;
+    font-weight:700; font-size:.85rem;
+    backdrop-filter:blur(10px);
+    transition:all .4s;
+    border:1px solid transparent;
+  }
+
+  /* ── Calibration bar (small, bottom of video) ── */
+  #calibBar {
+    position:absolute; bottom:0; left:0; right:0;
+    height:4px; background:rgba(255,255,255,.08);
+    transition:opacity .4s;
+  }
+  #calibFill {
+    height:100%; background:var(--accent);
+    transition:width .5s ease;
+    width:0%;
+  }
+  #calibLabel {
+    position:absolute; bottom:8px; right:.75rem;
+    font-size:.65rem; color:rgba(255,255,255,.5);
+    font-family:'JetBrains Mono',monospace;
+  }
+
+  /* ── Iris signal mini-chart below video ── */
+  .card {
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:1.25rem;
+  }
+  .card-title {
+    font-size:.65rem; font-weight:700; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--muted); margin-bottom:.75rem;
+  }
+  canvas#irisCanvas { width:100% !important; height:75px !important; }
+
+  /* ── Sidebar ── */
+  .sidebar { display:flex; flex-direction:column; gap:1rem; }
+
+  /* Gauge */
+  .gauge-wrap { display:flex; align-items:center; gap:1.25rem; }
+  svg.gauge  { transform:rotate(-90deg); flex-shrink:0; }
+  .gauge-bg  { fill:none; stroke:#1e2d4a; stroke-width:14; }
+  .gauge-arc {
+    fill:none; stroke-width:14; stroke-linecap:round;
+    stroke-dasharray:408; stroke-dashoffset:408;
+    transition:stroke-dashoffset .6s ease, stroke .4s;
+  }
+  .gauge-val {
+    font-size:2.4rem; font-weight:900;
+    font-family:'JetBrains Mono',monospace;
+    transition:color .4s; line-height:1;
+  }
+  .gauge-sub { font-size:.7rem; color:var(--muted); margin-top:.3rem; }
+
+  /* Status badge */
+  .status-badge {
+    width:100%; padding:.7rem; border-radius:10px; text-align:center;
+    font-size:1.1rem; font-weight:700; letter-spacing:.05em;
+    transition:all .4s; margin-top:.75rem;
+  }
+
+  /* Stats grid */
+  .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
+  .stat-box {
+    background:rgba(30,45,74,.5); border-radius:10px;
+    padding:.7rem; text-align:center;
+  }
+  .stat-box .val {
+    font-size:1.3rem; font-weight:700;
+    font-family:'JetBrains Mono',monospace;
+  }
+  .stat-box .lbl { font-size:.62rem; color:var(--muted); margin-top:.2rem; }
+
+  /* History */
+  canvas#histCanvas { width:100% !important; height:80px !important; }
+
+  /* Pipeline steps */
+  .pipeline { display:flex; flex-direction:column; gap:.5rem; }
+  .pipe-step {
+    display:flex; align-items:center; gap:.75rem;
+    font-size:.78rem; padding:.5rem .75rem;
+    border-radius:8px; background:rgba(30,45,74,.4);
+    transition:background .3s;
+  }
+  .pipe-step.active { background:rgba(99,102,241,.15); color:#a5b4fc; }
+  .pipe-icon { font-size:1rem; width:1.5rem; text-align:center; }
+
+  .info-pills { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.75rem; }
+  .pill {
+    font-size:.65rem; padding:.2rem .6rem; border-radius:20px;
+    background:rgba(99,102,241,.12); color:#a5b4fc;
+    border:1px solid rgba(99,102,241,.25);
+    font-family:'JetBrains Mono',monospace;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">👁️</div>
+    <div>
+      <h1>Real-Time Stress Detection</h1>
+      <p>Webcam · MediaPipe FaceMesh · CNN</p>
+    </div>
+  </div>
+  <div id="faceIndicator" class="scanning">
+    <div class="face-dot"></div>
+    <span id="faceText">Scanning for face...</span>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- LEFT: Video + iris chart -->
+  <div class="video-section">
+
+    <div class="video-wrap no-face" id="videoWrap">
+      <!-- Live MJPEG stream from server -->
+      <img id="webcamFeed" src="/video_feed" alt="Webcam"/>
+
+      <!-- Scan overlay: shown when NO face detected -->
+      <div id="scanOverlay">
+        <div class="scan-ring"></div>
+        <div class="scan-text">SCANNING FOR FACE...</div>
+        <div class="scan-sub">Position your face in front of the camera</div>
+      </div>
+
+      <!-- Status pill (top-left) -->
+      <div class="video-pill" id="videoPill"
+           style="background:rgba(245,158,11,.15);color:var(--warn);border-color:rgba(245,158,11,.3);">
+        🔍 Scanning...
+      </div>
+
+      <!-- Thin calibration progress bar at bottom -->
+      <div id="calibBar">
+        <div id="calibFill"></div>
+      </div>
+      <div id="calibLabel">Buffer: 0%</div>
+    </div>
+
+    <!-- Iris diameter signal -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+        <div class="card-title" style="margin:0;">Live Iris Size Signal</div>
+        <span id="irisVal" style="font-size:.75rem;color:#a5b4fc;font-family:'JetBrains Mono',monospace;">— px</span>
+      </div>
+      <canvas id="irisCanvas"></canvas>
+    </div>
+  </div>
+
+  <!-- RIGHT: Sidebar -->
+  <div class="sidebar">
+
+    <!-- Gauge -->
+    <div class="card">
+      <div class="card-title">Stress Probability</div>
+      <div class="gauge-wrap">
+        <svg class="gauge" viewBox="0 0 130 130" width="110" height="110">
+          <circle class="gauge-bg"  cx="65" cy="65" r="65"/>
+          <circle class="gauge-arc" cx="65" cy="65" r="65" id="gaugeArc"/>
+        </svg>
+        <div>
+          <div class="gauge-val" id="gaugeVal" style="color:var(--muted)">—</div>
+          <div class="gauge-sub" id="gaugeSub">Waiting for face</div>
+        </div>
+      </div>
+      <div class="status-badge" id="statusBadge"
+           style="background:rgba(100,116,139,.1);color:var(--muted);border:1px solid var(--border);">
+        🔍 No Face Detected
+      </div>
+    </div>
+
+    <!-- Session stats -->
+    <div class="card">
+      <div class="card-title">Session Stats</div>
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="val" id="statTotal" style="color:var(--accent)">0</div>
+          <div class="lbl">Predictions</div>
+        </div>
+        <div class="stat-box">
+          <div class="val" id="statStress" style="color:var(--stress)">—</div>
+          <div class="lbl">Stress ratio</div>
+        </div>
+        <div class="stat-box">
+          <div class="val" id="statFPS" style="color:var(--warn)">—</div>
+          <div class="lbl">Camera FPS</div>
+        </div>
+        <div class="stat-box">
+          <div class="val" id="statIris" style="color:#a5b4fc">—</div>
+          <div class="lbl">Iris px</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <div class="card-title">Prediction History</div>
+      <canvas id="histCanvas"></canvas>
+    </div>
+
+    <!-- Pipeline -->
+    <div class="card">
+      <div class="card-title">Detection Pipeline</div>
+      <div class="pipeline">
+        <div class="pipe-step" id="pipeCamera">
+          <span class="pipe-icon">📷</span>Webcam capture
+        </div>
+        <div class="pipe-step" id="pipeFace">
+          <span class="pipe-icon">👤</span>Face Mesh (468 pts)
+        </div>
+        <div class="pipe-step" id="pipeIris">
+          <span class="pipe-icon">👁️</span>Iris diameter
+        </div>
+        <div class="pipe-step" id="pipeBuffer">
+          <span class="pipe-icon">📊</span>Buffer &amp; resample (450 pts)
+        </div>
+        <div class="pipe-step" id="pipeCNN">
+          <span class="pipe-icon">🧠</span>CNN → Stress %
+        </div>
+      </div>
+      <div class="info-pills">
+        <span class="pill">MediaPipe 0.10.9</span>
+        <span class="pill">OpenCV</span>
+        <span class="pill">CNN</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const CIRC = 2 * Math.PI * 65; // ≈408
+
+// ── Gauge ──────────────────────────────────────────────────────────────────
+function setGauge(pct) {
+  const arc  = document.getElementById('gaugeArc');
+  const val  = document.getElementById('gaugeVal');
+  arc.style.strokeDashoffset = CIRC * (1 - pct / 100);
+  const c = pct > 60 ? '#ef4444' : pct > 35 ? '#f59e0b' : '#22c55e';
+  arc.style.stroke = c;
+  val.style.color  = c;
+}
+
+// ── Iris chart ─────────────────────────────────────────────────────────────
+const irisData = Array(80).fill(null);
+const irisCtx  = document.getElementById('irisCanvas').getContext('2d');
+const irisChart = new Chart(irisCtx, {
+  type:'line',
+  data:{
+    labels: Array(80).fill(''),
+    datasets:[{
+      data: irisData,
+      borderColor:'#a5b4fc',
+      backgroundColor:'rgba(165,180,252,.06)',
+      borderWidth:1.5,
+      pointRadius:0, fill:true, tension:0.4
+    }]
+  },
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:false,
+    plugins:{legend:{display:false}},
+    scales:{
+      x:{display:false},
+      y:{grid:{color:'#1e2d4a'}, ticks:{color:'#64748b', font:{size:10}}}
+    }
+  }
+});
+
+// ── History chart ──────────────────────────────────────────────────────────
+const histCtx = document.getElementById('histCanvas').getContext('2d');
+const histChart = new Chart(histCtx, {
+  type:'bar',
+  data:{
+    labels:Array(50).fill(''),
+    datasets:[{
+      data: Array(50).fill(0),
+      backgroundColor:Array(50).fill('rgba(100,116,139,.4)'),
+      borderRadius:3, borderSkipped:false
+    }]
+  },
+  options:{
+    responsive:true, maintainAspectRatio:false, animation:{duration:200},
+    plugins:{legend:{display:false}},
+    scales:{x:{display:false}, y:{display:false, min:0, max:100}}
+  }
+});
+
+// ── Poll /data every 400ms ─────────────────────────────────────────────────
+let prevHistory = 0;
+
+async function poll() {
+  try {
+    const r = await fetch('/data');
+    const d = await r.json();
+
+    const faceFound = d.face_found;
+    const ready     = d.buf_pct >= 100;
+    const sp        = d.stress_prob;
+    const isStr     = d.pred === 1;
+    const color     = isStr ? '#ef4444' : '#22c55e';
+
+    // ── Header face indicator ──
+    const indicator = document.getElementById('faceIndicator');
+    const faceText  = document.getElementById('faceText');
+    if (faceFound) {
+      indicator.className = 'detected';
+      faceText.textContent = 'Face Detected ✓';
+    } else {
+      indicator.className = 'scanning';
+      faceText.textContent = 'Scanning for face...';
+    }
+
+    // ── Scan overlay ──
+    const overlay = document.getElementById('scanOverlay');
+    overlay.classList.toggle('hidden', faceFound);
+
+    // ── Video wrap border ──
+    const wrap = document.getElementById('videoWrap');
+    if (!faceFound) {
+      wrap.className = 'video-wrap no-face';
+    } else if (isStr && ready) {
+      wrap.className = 'video-wrap stressed';
+    } else {
+      wrap.className = 'video-wrap calm';
+    }
+
+    // ── Status pill ──
+    const pill = document.getElementById('videoPill');
+    if (!faceFound) {
+      pill.textContent = '🔍 Scanning...';
+      pill.style.cssText = 'background:rgba(245,158,11,.15);color:var(--warn);border-color:rgba(245,158,11,.3);';
+    } else if (!ready) {
+      pill.textContent = `⏳ Calibrating ${d.buf_pct}%`;
+      pill.style.cssText = 'background:rgba(99,102,241,.15);color:#a5b4fc;border-color:rgba(99,102,241,.3);';
+    } else if (isStr) {
+      pill.textContent = '😰 STRESSED';
+      pill.style.cssText = 'background:rgba(239,68,68,.2);color:#ef4444;border-color:rgba(239,68,68,.4);';
+    } else {
+      pill.textContent = '😌 CALM';
+      pill.style.cssText = 'background:rgba(34,197,94,.2);color:#22c55e;border-color:rgba(34,197,94,.4);';
+    }
+
+    // ── Calibration bar ──
+    document.getElementById('calibFill').style.width  = d.buf_pct + '%';
+    document.getElementById('calibLabel').textContent = `Buffer: ${d.buf_pct}%`;
+
+    // ── Gauge ──
+    if (ready && faceFound) {
+      setGauge(sp);
+      document.getElementById('gaugeVal').textContent = sp.toFixed(1) + '%';
+      document.getElementById('gaugeSub').textContent = 'Model confidence';
+    } else {
+      document.getElementById('gaugeVal').textContent = '—';
+      document.getElementById('gaugeVal').style.color = 'var(--muted)';
+      document.getElementById('gaugeSub').textContent = faceFound ? 'Calibrating...' : 'Waiting for face';
+      document.getElementById('gaugeArc').style.strokeDashoffset = CIRC;
+    }
+
+    // ── Status badge ──
+    const badge = document.getElementById('statusBadge');
+    if (!faceFound) {
+      badge.textContent = '🔍 No Face Detected';
+      badge.style.cssText = 'background:rgba(100,116,139,.1);color:var(--muted);border:1px solid var(--border);margin-top:.75rem;';
+    } else if (!ready) {
+      badge.textContent = `⏳ Calibrating ${d.buf_pct}%`;
+      badge.style.cssText = 'background:rgba(99,102,241,.1);color:#a5b4fc;border:1px solid rgba(99,102,241,.3);margin-top:.75rem;';
+    } else if (isStr) {
+      badge.textContent = '😰 STRESSED';
+      badge.style.cssText = 'background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.3);margin-top:.75rem;';
+    } else {
+      badge.textContent = '😌 CALM';
+      badge.style.cssText = 'background:rgba(34,197,94,.1);color:#22c55e;border:1px solid rgba(34,197,94,.25);margin-top:.75rem;';
+    }
+
+    // ── Pipeline steps ──
+    ['pipeCamera','pipeFace','pipeIris','pipeBuffer','pipeCNN'].forEach(id => {
+      document.getElementById(id).classList.remove('active');
+    });
+    document.getElementById('pipeCamera').classList.add('active');
+    if (faceFound) {
+      document.getElementById('pipeFace').classList.add('active');
+      document.getElementById('pipeIris').classList.add('active');
+    }
+    if (d.buf_pct > 0) document.getElementById('pipeBuffer').classList.add('active');
+    if (ready && faceFound) document.getElementById('pipeCNN').classList.add('active');
+
+    // ── Stats ──
+    const hist = d.history || [];
+    document.getElementById('statTotal').textContent  = hist.length;
+    document.getElementById('statStress').textContent =
+      hist.length ? Math.round(hist.filter(h=>h.pred===1).length/hist.length*100)+'%' : '—';
+    document.getElementById('statFPS').textContent   = d.fps || '—';
+    document.getElementById('statIris').textContent  = d.iris_size > 0 ? d.iris_size.toFixed(1) : '—';
+    document.getElementById('irisVal').textContent   = d.iris_size > 0 ? d.iris_size.toFixed(1)+' px' : '— px';
+
+    // ── Iris signal chart ──
+    irisData.push(d.iris_size > 0 ? d.iris_size : null);
+    if (irisData.length > 80) irisData.shift();
+    irisChart.data.datasets[0].data = [...irisData];
+    irisChart.data.datasets[0].borderColor = faceFound
+      ? (isStr && ready ? '#f87171' : '#a5b4fc') : '#374151';
+    irisChart.update('none');
+
+    // ── History bars ──
+    if (hist.length !== prevHistory) {
+      prevHistory = hist.length;
+      const last50 = hist.slice(-50);
+      histChart.data.datasets[0].data            = last50.map(h => h.sp);
+      histChart.data.datasets[0].backgroundColor =
+        last50.map(h => h.pred===1 ? 'rgba(239,68,68,.65)' : 'rgba(34,197,94,.55)');
+      histChart.update('none');
+    }
+
+  } catch(e) { /* server momentarily unreachable */ }
+
+  setTimeout(poll, 400);
+}
+
+poll();
+</script>
+</body>
+</html>
