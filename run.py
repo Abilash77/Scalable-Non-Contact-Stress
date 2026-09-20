@@ -717,6 +717,10 @@ def build_status_payload(state):
     unavailable = _parse_json_field(state.get('unavailable_modalities'), [])
     available = [m for m in MODALITY_API_ORDER if m not in unavailable]
 
+    buffer_fills = _parse_json_field(state.get('buffer_fills'), {})
+    keyboard_fills = buffer_fills.get('keystroke', 0)
+    keyboard_window_ready = keyboard_fills >= 10
+
     if model_status == 'LOADING':
         status = 'LOADING'
     elif not is_trained:
@@ -728,10 +732,16 @@ def build_status_payload(state):
 
     fusion_pred = state.get('fusion_pred', 0)
     if is_trained and is_live:
-        prediction = 'STRESS' if fusion_pred == 1 else 'NON-STRESS'
-        stress_probability = state.get('smoothed_stress_prob', 0.0)
-        non_stress_probability = state.get('smoothed_nonstress_prob', 1.0)
-        confidence = state.get('confidence', 0.0)
+        if not keyboard_window_ready:
+            prediction = 'WAITING FOR KEYBOARD WINDOW'
+            stress_probability = None
+            non_stress_probability = None
+            confidence = None
+        else:
+            prediction = 'STRESS' if fusion_pred == 1 else 'NON-STRESS'
+            stress_probability = state.get('smoothed_stress_prob', 0.0)
+            non_stress_probability = state.get('smoothed_nonstress_prob', 1.0)
+            confidence = state.get('confidence', 0.0)
     else:
         prediction = 'NOT AVAILABLE'
         stress_probability = None
@@ -750,6 +760,7 @@ def build_status_payload(state):
         'stress_probability': stress_probability,
         'non_stress_probability': non_stress_probability,
         'confidence': confidence,
+        'keyboard_window_ready': keyboard_window_ready,
         'modality_reliability': reliabilities,
         'modality_attention': modality_attention,
         'available_modalities': available,

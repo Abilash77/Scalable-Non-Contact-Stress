@@ -175,6 +175,7 @@
                     </div>
                     <div class="analysis-details">
                         <div class="detail-row"><span>Model</span><span id="detail-model" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Status</span><span id="detail-status" style="font-weight:bold; font-size: 0.9em; color: var(--text-muted);">—</span></div>
                         <div class="detail-row"><span>Inference</span><span id="detail-inference" style="font-weight:bold;">—</span></div>
                         <div class="detail-row"><span>Prediction</span><span id="detail-prediction" style="font-weight:bold;">—</span></div>
                         <div class="detail-row"><span>Confidence</span><span id="detail-confidence" style="font-weight:bold;">—</span></div>
@@ -559,20 +560,26 @@
                         probGrid.style.display = 'none';
                     } else if (predictionsOk) {
                         stateEl.innerText = data.prediction || '—';
-                        stateEl.className = 'current-state ' + (data.prediction === 'STRESS' ? 'status-red' : 'status-green');
-                        probGrid.style.display = 'grid';
-                        document.getElementById('stress-pct').innerText = ((data.stress_probability || 0) * 100).toFixed(1) + '%';
-                        document.getElementById('nonstress-pct').innerText = ((data.non_stress_probability || 0) * 100).toFixed(1) + '%';
+                        if (data.prediction === 'WAITING FOR KEYBOARD WINDOW') {
+                            stateEl.className = 'current-state status-orange';
+                            probGrid.style.display = 'none';
+                        } else {
+                            stateEl.className = 'current-state ' + (data.prediction === 'STRESS' ? 'status-red' : 'status-green');
+                            probGrid.style.display = 'grid';
+                            document.getElementById('stress-pct').innerText = ((data.stress_probability || 0) * 100).toFixed(1) + '%';
+                            document.getElementById('nonstress-pct').innerText = ((data.non_stress_probability || 0) * 100).toFixed(1) + '%';
+                        }
                     } else {
                         stateEl.innerText = 'WARMING UP';
                         stateEl.className = 'current-state status-neutral';
                         probGrid.style.display = 'none';
                     }
 
-                    document.getElementById('detail-model').innerText = data.model_status || '—';
+                    document.getElementById('detail-model').innerText = data.checkpoint_name || 'Freihaut Keyboard Stress Model';
+                    document.getElementById('detail-status').innerText = predictionsOk ? 'RESEARCH / NOT CLINICALLY VALIDATED' : '—';
                     document.getElementById('detail-inference').innerText = trained ? 'TRAINED' : 'ARCHITECTURE TEST';
                     document.getElementById('detail-prediction').innerText = predictionsOk ? (data.prediction || '—') : 'NOT AVAILABLE';
-                    document.getElementById('detail-confidence').innerText = predictionsOk && data.confidence != null
+                    document.getElementById('detail-confidence').innerText = (predictionsOk && data.prediction !== 'WAITING FOR KEYBOARD WINDOW' && data.confidence != null)
                         ? ((data.confidence * 100).toFixed(1) + '%') : '—';
 
                     // Performance
