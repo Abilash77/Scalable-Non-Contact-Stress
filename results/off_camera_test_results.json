@@ -1,0 +1,56 @@
+{
+  "1. Camera ON, Keyboard ON": {
+    "prediction": "STRESS",
+    "available_modalities": [
+      "keyboard"
+    ],
+    "unavailable_modalities": [
+      "speech",
+      "facial",
+      "handwriting",
+      "eye_pupil"
+    ],
+    "usable_modalities": [
+      "keyboard"
+    ]
+  },
+  "2. Camera OFF, Keyboard ON": {
+    "prediction": "STRESS",
+    "available_modalities": [
+      "keyboard"
+    ],
+    "unavailable_modalities": [
+      "speech",
+      "facial",
+      "handwriting",
+      "eye_pupil"
+    ],
+    "usable_modalities": [
+      "keyboard"
+    ]
+  },
+  "3. Camera OFF, Keyboard OFF": {
+    "prediction": "STRESS",
+    "available_modalities": [],
+    "unavailable_modalities": [
+      "speech",
+      "facial",
+      "keyboard",
+      "handwriting",
+      "eye_pupil"
+    ],
+    "usable_modalities": []
+  },
+  "4. Camera ON, Keyboard OFF": {
+    "prediction": "STRESS",
+    "available_modalities": [],
+    "unavailable_modalities": [
+      "speech",
+      "facial",
+      "keyboard",
+      "handwriting",
+      "eye_pupil"
+    ],
+    "usable_modalities": []
+  }
+}

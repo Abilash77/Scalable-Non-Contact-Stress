@@ -1,0 +1,17 @@
+{
+  "dataset": "Keystroke-Stress",
+  "modalities_used": ["keystroke"],
+  "model_architecture": "fusion",
+  "metrics": {
+    "val_accuracy": 1.0,
+    "val_fusion_loss": 0.0356,
+    "train_accuracy": 1.0,
+    "train_fusion_loss": 0.0342
+  },
+  "training_parameters": {
+    "epochs": 10,
+    "optimizer": "adam",
+    "loss_weights": "fusion=1.0, unimodal=0.1"
+  },
+  "notes": "Trained on real keystroke-stress data containing flight and dwell time dynamics aligned with PAM self-reported stress labels. Replaces the legacy DriveDB fallback."
+}

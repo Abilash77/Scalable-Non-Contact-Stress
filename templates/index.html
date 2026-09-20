@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RA-HMSD Dashboard</title>
+    <title>RA-HMSD Live Stress Monitor</title>
     <style>
         :root {
             --bg-color: #0b0c10;
@@ -17,350 +17,90 @@
             --status-red: #f44336;
             --status-neutral: #607d8b;
         }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            padding: 20px;
-            font-size: 14px;
-        }
-
-        .dashboard-container {
-            max-width: 1600px;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-
-        /* Header */
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background-color: var(--panel-bg);
-            padding: 15px 25px;
-            border-radius: 8px;
-            border-left: 4px solid var(--accent-cyan);
-        }
-        
-        .header-title h1 {
-            font-size: 1.5em;
-            color: var(--accent-cyan);
-            margin-bottom: 5px;
-        }
-
-        .header-title p {
-            color: var(--text-secondary);
-            font-size: 0.9em;
-        }
-
-        .header-stats {
-            display: flex;
-            gap: 30px;
-            text-align: right;
-        }
-
-        .stat-item .label {
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 3px;
-        }
-        
-        .stat-item .value {
-            font-size: 1.1em;
-            font-weight: 600;
-        }
-        
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text-primary); padding: 20px; font-size: 14px; }
+        .dashboard-container { max-width: 1600px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; background-color: var(--panel-bg); padding: 15px 25px; border-radius: 8px; border-left: 4px solid var(--accent-cyan); }
+        .header-title h1 { font-size: 1.5em; color: var(--accent-cyan); margin-bottom: 5px; }
+        .header-title p { color: var(--text-secondary); font-size: 0.9em; }
+        .header-stats { display: flex; gap: 30px; text-align: right; }
+        .stat-item .label { font-size: 0.8em; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
+        .stat-item .value { font-size: 1.1em; font-weight: 600; }
         .value.status-green { color: var(--status-green); }
         .value.status-red { color: var(--status-red); }
-
-        /* Top Cards */
-        .top-cards {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 20px;
-        }
-
-        .card {
-            background-color: var(--panel-bg);
-            padding: 15px 20px;
-            border-radius: 8px;
-        }
-
-        .card h3 {
-            font-size: 0.85em;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            padding-bottom: 5px;
-        }
-
-        .card-value {
-            font-size: 1.4em;
-            font-weight: bold;
-            margin-bottom: 5px;
-        }
-
-        .card-subtext {
-            font-size: 0.85em;
-            color: var(--status-amber);
-        }
-
-        /* Main Content Split */
-        .main-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .panel {
-            background-color: var(--panel-bg);
-            border-radius: 8px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .panel-header {
-            background-color: rgba(0,0,0,0.2);
-            padding: 10px 15px;
-            font-weight: bold;
-            font-size: 0.9em;
-            color: var(--accent-cyan);
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .panel-body {
-            padding: 15px;
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .camera-container {
-            width: 100%;
-            background: #000;
-            aspect-ratio: 4/3;
-            border-radius: 4px;
-            overflow: hidden;
-            position: relative;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 15px;
-        }
-
-        #camera-stream {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-        
-        .camera-overlay-text {
-            position: absolute;
-            color: var(--status-red);
-            font-weight: bold;
-            font-size: 1.5em;
-            letter-spacing: 2px;
-            display: none;
-        }
-
-        .camera-stats {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-
-        .cam-stat {
-            background: rgba(0,0,0,0.2);
-            padding: 10px;
-            border-radius: 4px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .analysis-state {
-            background: rgba(0,0,0,0.2);
-            padding: 20px;
-            border-radius: 4px;
-            text-align: center;
-            margin-bottom: 20px;
-        }
-        
-        .analysis-state .current-state {
-            font-size: 1.8em;
-            color: var(--status-amber);
-            font-weight: bold;
-            margin-top: 10px;
-        }
-
-        .analysis-details {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px;
-            background: rgba(0,0,0,0.1);
-            border-radius: 4px;
-        }
-
-        /* Modality Monitor */
-        .modality-monitor {
-            display: grid;
-            grid-template-columns: repeat(5, 1fr);
-            gap: 15px;
-        }
-
-        .mod-card {
-            background-color: var(--panel-bg);
-            padding: 15px;
-            border-radius: 8px;
-            border-top: 3px solid var(--status-neutral);
-        }
-
+        .value.status-amber { color: var(--status-amber); }
+        .value.status-neutral { color: var(--status-neutral); }
+        .top-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+        .card { background-color: var(--panel-bg); padding: 15px 20px; border-radius: 8px; }
+        .card h3 { font-size: 0.85em; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 5px; }
+        .card-value { font-size: 1.4em; font-weight: bold; margin-bottom: 5px; }
+        .card-subtext { font-size: 0.85em; color: var(--status-amber); }
+        .main-content { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .panel { background-color: var(--panel-bg); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+        .panel-header { background-color: rgba(0,0,0,0.2); padding: 10px 15px; font-weight: bold; font-size: 0.9em; color: var(--accent-cyan); border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; }
+        .panel-body { padding: 15px; flex: 1; display: flex; flex-direction: column; }
+        .camera-container { width: 100%; background: #000; aspect-ratio: 4/3; border-radius: 4px; overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 15px; }
+        #camera-stream { width: 100%; height: 100%; object-fit: contain; }
+        .camera-overlay-text { position: absolute; color: var(--status-red); font-weight: bold; font-size: 1.5em; letter-spacing: 2px; display: none; }
+        .camera-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .cam-stat { background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px; display: flex; justify-content: space-between; align-items: center; }
+        .analysis-state { background: rgba(0,0,0,0.2); padding: 20px; border-radius: 4px; text-align: center; margin-bottom: 20px; }
+        .analysis-state .current-state { font-size: 1.8em; font-weight: bold; margin-top: 10px; }
+        .prob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .prob-box { background: rgba(0,0,0,0.2); padding: 12px; border-radius: 4px; text-align: center; }
+        .prob-box .label { font-size: 0.75em; color: var(--text-secondary); text-transform: uppercase; }
+        .prob-box .pct { font-size: 1.5em; font-weight: bold; margin-top: 4px; }
+        .analysis-details { display: flex; flex-direction: column; gap: 10px; }
+        .detail-row { display: flex; justify-content: space-between; padding: 10px; background: rgba(0,0,0,0.1); border-radius: 4px; }
+        .modality-monitor { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; }
+        .mod-card { background-color: var(--panel-bg); padding: 15px; border-radius: 8px; border-top: 3px solid var(--status-neutral); }
         .mod-card.active { border-top-color: var(--status-green); }
         .mod-card.stale { border-top-color: var(--status-amber); }
         .mod-card.offline { border-top-color: var(--status-red); }
-
-        .mod-title {
-            font-weight: bold;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-        }
-        
+        .mod-title { font-weight: bold; margin-bottom: 10px; display: flex; justify-content: space-between; }
         .mod-status { font-size: 0.8em; }
         .mod-card.active .mod-status { color: var(--status-green); }
         .mod-card.stale .mod-status { color: var(--status-amber); }
         .mod-card.offline .mod-status { color: var(--status-red); }
-
-        .timeline-box {
-            display: flex;
-            gap: 4px;
-            margin-top: 10px;
-            margin-bottom: 8px;
-        }
-        
-        .timeline-step {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background-color: #333;
-        }
-        .timeline-step.filled {
-            background-color: var(--accent-cyan);
-        }
-        
-        .mod-freshness {
-            font-size: 0.8em;
-            color: var(--text-secondary);
-            text-align: right;
-        }
-
-        /* Bottom Section Grid */
-        .bottom-section {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-        }
-        
-        .list-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.05);
-            font-size: 0.9em;
-        }
+        .timeline-box { display: flex; gap: 4px; margin-top: 10px; margin-bottom: 8px; }
+        .timeline-step { width: 12px; height: 12px; border-radius: 50%; background-color: #333; }
+        .timeline-step.filled { background-color: var(--accent-cyan); }
+        .mod-freshness { font-size: 0.8em; color: var(--text-secondary); text-align: right; }
+        .bottom-section { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+        .list-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.9em; align-items: center; }
         .list-row:last-child { border-bottom: none; }
-        
-        .attention-bar-container {
-            width: 100px;
-            height: 8px;
-            background: #333;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-left: 10px;
-        }
-        
-        .attention-bar {
-            height: 100%;
-            background: var(--accent-cyan);
-            width: 0%;
-        }
-        
-        .attention-val {
-            display: flex;
-            align-items: center;
-        }
-        
-        .log-container {
-            height: 200px;
-            overflow-y: auto;
-            font-family: monospace;
-            font-size: 0.85em;
-            background: rgba(0,0,0,0.3);
-            padding: 10px;
-            border-radius: 4px;
-        }
-        
+        .attention-bar-container { width: 100px; height: 8px; background: #333; border-radius: 4px; overflow: hidden; margin-left: 10px; }
+        .attention-bar { height: 100%; background: var(--accent-cyan); width: 0%; transition: width 0.2s; }
+        .attention-val { display: flex; align-items: center; }
+        .history-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        .history-table th, .history-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .history-table th { color: var(--text-secondary); font-weight: normal; text-transform: uppercase; font-size: 0.75em; }
+        .log-container { height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.85em; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; }
         .log-entry { margin-bottom: 4px; color: #aaa; }
         .log-time { color: var(--accent-green); margin-right: 8px; }
-
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            font-weight: bold;
-            cursor: pointer;
-            flex: 1;
-            transition: opacity 0.2s;
-            color: #fff;
-        }
+        .controls { display: flex; gap: 10px; margin-top: 15px; }
+        button { padding: 10px 20px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; flex: 1; transition: opacity 0.2s; color: #fff; }
         button:hover { opacity: 0.9; }
         .btn-start { background-color: var(--status-green); }
         .btn-stop { background-color: var(--status-red); }
         .btn-reset { background-color: var(--status-neutral); }
-
+        .handwriting-panel canvas { width: 100%; height: 120px; background: #fff; border-radius: 4px; cursor: crosshair; touch-action: none; }
+        .handwriting-actions { display: flex; gap: 8px; margin-top: 8px; }
+        .handwriting-actions button { flex: unset; padding: 8px 14px; font-size: 0.85em; }
+        .na-banner { color: var(--status-neutral); font-weight: bold; text-align: center; padding: 30px 0; }
     </style>
 </head>
 <body>
     <div class="dashboard-container">
-        
-        <!-- HEADER -->
         <header>
             <div class="header-title">
-                <h1>RA-HMSD</h1>
-                <p>Scalable Non-Contact Stress Detection</p>
+                <h1>LIVE STRESS MONITOR</h1>
+                <p>RA-HMSD — Scalable Non-Contact Stress Detection</p>
             </div>
             <div class="header-stats">
                 <div class="stat-item">
-                    <div class="label">System</div>
-                    <div class="value status-green">● LIVE</div>
+                    <div class="label">System Status</div>
+                    <div class="value status-neutral" id="sys-status">LOADING</div>
                 </div>
                 <div class="stat-item">
                     <div class="label">Connection</div>
@@ -373,17 +113,16 @@
             </div>
         </header>
 
-        <!-- TOP STATUS CARDS -->
         <div class="top-cards">
             <div class="card">
                 <h3>Model Status</h3>
-                <div class="card-value status-neutral" id="model-status">UNTRAINED</div>
-                <div class="card-subtext">ARCHITECTURE TEST ONLY</div>
+                <div class="card-value status-neutral" id="model-status">LOADING</div>
+                <div class="card-subtext" id="model-subtext">Initializing...</div>
             </div>
             <div class="card">
                 <h3>Data Status</h3>
-                <div class="card-value status-neutral" id="data-status">DATASET</div>
-                <div class="card-subtext">NOT AVAILABLE</div>
+                <div class="card-value status-neutral" id="data-status">—</div>
+                <div class="card-subtext" id="data-subtext">Checkpoint not loaded</div>
             </div>
             <div class="card">
                 <h3>Real-Time</h3>
@@ -393,17 +132,15 @@
             <div class="card">
                 <h3>Pipeline</h3>
                 <div class="card-value" id="rt-ms">-- ms</div>
-                <div class="card-subtext">Internal processing latency</div>
+                <div class="card-subtext">Total pipeline latency</div>
             </div>
         </div>
 
-        <!-- MAIN CONTENT -->
         <div class="main-content">
-            <!-- CAMERA -->
             <div class="panel">
                 <div class="panel-header">
                     <span>LIVE CAMERA</span>
-                    <span id="cam-head-status" style="color: var(--status-green);">● ONLINE</span>
+                    <span id="cam-head-status" style="color: var(--status-neutral);">● OFFLINE</span>
                 </div>
                 <div class="panel-body">
                     <div class="camera-container">
@@ -411,49 +148,36 @@
                         <div id="cam-offline-text" class="camera-overlay-text">CAMERA OFFLINE</div>
                     </div>
                     <div class="camera-stats">
-                        <div class="cam-stat">
-                            <span>Face:</span>
-                            <span id="stat-face-det" style="font-weight:bold; color:var(--status-amber)">NO FACE</span>
-                        </div>
-                        <div class="cam-stat">
-                            <span>Camera:</span>
-                            <span id="stat-cam-conn" style="font-weight:bold; color:var(--status-green)">ONLINE</span>
-                        </div>
-                        <div class="cam-stat">
-                            <span>Face FPS:</span>
-                            <span id="stat-cam-fps" style="font-weight:bold;">--</span>
-                        </div>
-                        <div class="cam-stat">
-                            <span>Frame Age:</span>
-                            <span id="stat-frame-age" style="font-weight:bold;">-- ms</span>
-                        </div>
+                        <div class="cam-stat"><span>Face:</span><span id="stat-face-det" style="font-weight:bold;">—</span></div>
+                        <div class="cam-stat"><span>Camera:</span><span id="stat-cam-conn" style="font-weight:bold;">—</span></div>
+                        <div class="cam-stat"><span>Camera FPS:</span><span id="stat-cam-fps" style="font-weight:bold;">—</span></div>
+                        <div class="cam-stat"><span>Frame Age:</span><span id="stat-frame-age" style="font-weight:bold;">—</span></div>
                     </div>
                 </div>
             </div>
-            
-            <!-- ANALYSIS -->
+
             <div class="panel">
-                <div class="panel-header">
-                    <span>LIVE ANALYSIS</span>
-                </div>
+                <div class="panel-header"><span>CURRENT STATE</span></div>
                 <div class="panel-body">
                     <div class="analysis-state">
                         <div style="color:var(--text-secondary); font-size:0.9em; text-transform:uppercase;">Current State</div>
-                        <div class="current-state">ARCHITECTURE TEST ONLY</div>
+                        <div class="current-state status-neutral" id="current-state">INITIALIZING</div>
+                    </div>
+                    <div class="prob-grid" id="prob-grid" style="display:none;">
+                        <div class="prob-box">
+                            <div class="label">Stress</div>
+                            <div class="pct status-red" id="stress-pct">—</div>
+                        </div>
+                        <div class="prob-box">
+                            <div class="label">Non-Stress</div>
+                            <div class="pct status-green" id="nonstress-pct">—</div>
+                        </div>
                     </div>
                     <div class="analysis-details">
-                        <div class="detail-row">
-                            <span>Model</span>
-                            <span style="font-weight:bold; color:var(--status-neutral)">UNTRAINED</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Inference</span>
-                            <span style="font-weight:bold; color:var(--status-neutral)">ARCHITECTURE TEST</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Prediction</span>
-                            <span style="font-weight:bold; color:var(--status-neutral)">NOT AVAILABLE</span>
-                        </div>
+                        <div class="detail-row"><span>Model</span><span id="detail-model" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Inference</span><span id="detail-inference" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Prediction</span><span id="detail-prediction" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Confidence</span><span id="detail-confidence" style="font-weight:bold;">—</span></div>
                     </div>
                     <div class="controls">
                         <button class="btn-start" onclick="sendControl('start')">START MONITORING</button>
@@ -464,75 +188,89 @@
             </div>
         </div>
 
-        <!-- MODALITY MONITOR -->
         <div class="modality-monitor">
-            <div class="mod-card" id="mod-keyboard">
+            <div class="mod-card offline" id="mod-keyboard">
                 <div class="mod-title">KEYBOARD <span class="mod-status">OFFLINE</span></div>
                 <div class="timeline-box" id="tl-keyboard"></div>
                 <div class="mod-freshness">Window: 0/10</div>
             </div>
-            <div class="mod-card" id="mod-speech">
+            <div class="mod-card offline" id="mod-speech">
                 <div class="mod-title">SPEECH <span class="mod-status">OFFLINE</span></div>
                 <div class="timeline-box" id="tl-speech"></div>
                 <div class="mod-freshness">Window: 0/10</div>
             </div>
-            <div class="mod-card" id="mod-facial">
+            <div class="mod-card offline" id="mod-facial">
                 <div class="mod-title">FACIAL <span class="mod-status">OFFLINE</span></div>
                 <div class="timeline-box" id="tl-facial"></div>
                 <div class="mod-freshness">Window: 0/10</div>
             </div>
-            <div class="mod-card" id="mod-eye">
+            <div class="mod-card offline" id="mod-eye">
                 <div class="mod-title">EYE/PUPIL <span class="mod-status">OFFLINE</span></div>
                 <div class="timeline-box" id="tl-eye"></div>
                 <div class="mod-freshness">Window: 0/10</div>
             </div>
-            <div class="mod-card" id="mod-handwriting">
+            <div class="mod-card offline" id="mod-handwriting">
                 <div class="mod-title">HANDWRITING <span class="mod-status">OFFLINE</span></div>
                 <div class="timeline-box" id="tl-handwriting"></div>
                 <div class="mod-freshness">Window: 0/10</div>
             </div>
         </div>
 
-        <!-- BOTTOM SECTION -->
-        <div class="bottom-section">
-            <div class="panel">
-                <div class="panel-header"><span>RELIABILITY / ATTENTION</span></div>
-                <div class="panel-body" style="justify-content:center; text-align:center;">
-                    <div style="color:var(--status-neutral); font-weight:bold; font-size:1.2em; padding:40px 0;">
-                        ATTENTION NOT AVAILABLE
-                    </div>
+        <div class="panel handwriting-panel">
+            <div class="panel-header"><span>HANDWRITING INPUT</span></div>
+            <div class="panel-body">
+                <canvas id="hw-canvas" width="640" height="160"></canvas>
+                <div class="handwriting-actions">
+                    <button class="btn-reset" onclick="clearHandwriting()">Clear</button>
+                    <button class="btn-start" onclick="submitHandwriting()">Submit Sample</button>
                 </div>
             </div>
-            
+        </div>
+
+        <div class="bottom-section">
+            <div class="panel">
+                <div class="panel-header"><span>MODALITY RELIABILITY / FUSION ATTENTION</span></div>
+                <div class="panel-body" id="reliability-panel">
+                    <div class="na-banner">Reliability data loading...</div>
+                </div>
+            </div>
             <div class="panel">
                 <div class="panel-header"><span>PERFORMANCE</span></div>
                 <div class="panel-body">
                     <div class="list-row"><span>Inference Frequency:</span><span id="perf-hz" style="font-weight:bold">-- Hz</span></div>
                     <div class="list-row"><span>Target Interval:</span><span style="font-weight:bold">100.0 ms</span></div>
-                    <div class="list-row"><span>Model Latency:</span><span id="perf-model" style="font-weight:bold">-- ms</span></div>
-                    <div class="list-row"><span>Feature Processing:</span><span id="perf-feat" style="font-weight:bold">-- ms</span></div>
-                    <div class="list-row"><span>Dropped Cycles:</span><span id="perf-dropped" style="font-weight:bold; color:var(--status-green)">0</span></div>
+                    <div class="list-row"><span>Feature Extraction:</span><span id="perf-feat" style="font-weight:bold">-- ms</span></div>
+                    <div class="list-row"><span>Model Inference:</span><span id="perf-model" style="font-weight:bold">-- ms</span></div>
+                    <div class="list-row"><span>Total Pipeline:</span><span id="perf-total" style="font-weight:bold">-- ms</span></div>
+                    <div class="list-row"><span>Failed Cycles:</span><span id="perf-failed" style="font-weight:bold">0</span></div>
                 </div>
             </div>
-            
             <div class="panel">
-                <div class="panel-header"><span>SYSTEM LOG</span></div>
-                <div class="panel-body" style="padding:10px;">
-                    <div class="log-container" id="event-log">
-                        <div class="log-entry"><span class="log-time">System</span> Dashboard initialized</div>
-                    </div>
+                <div class="panel-header"><span>TEMPORAL MONITOR</span></div>
+                <div class="panel-body" style="padding:10px; overflow-y:auto; max-height:260px;">
+                    <table class="history-table">
+                        <thead><tr><th>Time</th><th>State</th><th>Stress Prob</th></tr></thead>
+                        <tbody id="history-body"><tr><td colspan="3" style="color:var(--text-secondary)">No history yet</td></tr></tbody>
+                    </table>
                 </div>
             </div>
         </div>
 
+        <div class="panel">
+            <div class="panel-header"><span>SYSTEM LOG</span></div>
+            <div class="panel-body" style="padding:10px;">
+                <div class="log-container" id="event-log">
+                    <div class="log-entry"><span class="log-time">System</span> Dashboard initialized</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
-        // Generate timeline steps
         const mods = ['keyboard', 'speech', 'facial', 'eye', 'handwriting'];
         mods.forEach(mod => {
             const tl = document.getElementById('tl-' + mod);
-            for(let i=0; i<10; i++) {
+            for (let i = 0; i < 10; i++) {
                 const step = document.createElement('div');
                 step.className = 'timeline-step';
                 tl.appendChild(step);
@@ -541,14 +279,79 @@
 
         let eventLog = [];
         let prevState = {};
+        let lastCycleCount = undefined;
+        let lastCycleTime = performance.now();
+
+        // Handwriting canvas
+        const hwCanvas = document.getElementById('hw-canvas');
+        const hwCtx = hwCanvas.getContext('2d');
+        hwCtx.lineWidth = 2;
+        hwCtx.lineCap = 'round';
+        hwCtx.strokeStyle = '#000';
+        let drawing = false;
+
+        function canvasPos(e) {
+            const rect = hwCanvas.getBoundingClientRect();
+            const src = e.touches ? e.touches[0] : e;
+            return {
+                x: (src.clientX - rect.left) * (hwCanvas.width / rect.width),
+                y: (src.clientY - rect.top) * (hwCanvas.height / rect.height)
+            };
+        }
+        hwCanvas.addEventListener('mousedown', e => { drawing = true; const p = canvasPos(e); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
+        hwCanvas.addEventListener('mousemove', e => { if (!drawing) return; const p = canvasPos(e); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
+        hwCanvas.addEventListener('mouseup', () => drawing = false);
+        hwCanvas.addEventListener('mouseleave', () => drawing = false);
+        hwCanvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = canvasPos(e); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
+        hwCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; const p = canvasPos(e); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
+        hwCanvas.addEventListener('touchend', () => drawing = false);
+
+        function clearHandwriting() {
+            hwCtx.fillStyle = '#fff';
+            hwCtx.fillRect(0, 0, hwCanvas.width, hwCanvas.height);
+            hwCtx.fillStyle = 'transparent';
+            fetch('/api/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'clear_handwriting' })
+            }).then(() => addLog('Handwriting cleared'));
+        }
+        clearHandwriting();
+
+        function submitHandwriting() {
+            const btnSubmit = document.querySelector('.handwriting-actions .btn-start');
+            if (btnSubmit.disabled) return;
+            btnSubmit.disabled = true;
+            btnSubmit.innerText = 'SUBMITTING...';
+
+            const img = hwCanvas.toDataURL('image/png');
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), 3000);
+
+            fetch('/upload_handwriting', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: img }),
+                signal: controller.signal
+            }).then(r => r.json()).then(() => {
+                clearTimeout(id);
+                addLog('Handwriting sample submitted');
+                btnSubmit.innerText = 'RECEIVED';
+                setTimeout(() => { btnSubmit.innerText = 'Submit Sample'; btnSubmit.disabled = false; }, 1500);
+            }).catch(() => {
+                clearTimeout(id);
+                addLog('HANDWRITING ERROR');
+                btnSubmit.innerText = 'ERROR';
+                setTimeout(() => { btnSubmit.innerText = 'Submit Sample'; btnSubmit.disabled = false; }, 1500);
+            });
+            clearHandwriting();
+        }
 
         function addLog(msg) {
             const now = new Date();
-            const timeStr = now.getHours().toString().padStart(2, '0') + ':' + 
-                            now.getMinutes().toString().padStart(2, '0') + ':' + 
-                            now.getSeconds().toString().padStart(2, '0');
+            const timeStr = now.toTimeString().slice(0, 8);
             eventLog.unshift(`<div class="log-entry"><span class="log-time">${timeStr}</span> ${msg}</div>`);
-            if(eventLog.length > 30) eventLog.pop();
+            if (eventLog.length > 30) eventLog.pop();
             document.getElementById('event-log').innerHTML = eventLog.join('');
         }
 
@@ -556,56 +359,178 @@
             const h = Math.floor(seconds / 3600);
             const m = Math.floor((seconds % 3600) / 60);
             const s = Math.floor(seconds % 60);
-            return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+            return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
         }
 
         function sendControl(action) {
+            const btnStart = document.querySelector('.btn-start');
+            const btnStop = document.querySelector('.btn-stop');
+            const originalStartText = btnStart.innerText;
+            const originalStopText = btnStop.innerText;
+
+            if (action === 'start') {
+                btnStart.innerText = 'STARTING...';
+                btnStart.disabled = true;
+                btnStop.disabled = true;
+            } else if (action === 'stop') {
+                btnStop.innerText = 'STOPPING...';
+                btnStart.disabled = true;
+                btnStop.disabled = true;
+            }
+
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), 2000);
+
             fetch('/api/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: action })
+                body: JSON.stringify({ action }),
+                signal: controller.signal
+            }).then(() => {
+                clearTimeout(id);
+                if (action === 'start') addLog('Monitoring started');
+                if (action === 'stop') addLog('Monitoring stopped');
+                if (action === 'reset') addLog('Session reset');
+            }).catch(() => {
+                clearTimeout(id);
+                addLog('CONNECTION ERROR');
+                if (action === 'start') btnStart.innerText = originalStartText;
+                if (action === 'stop') btnStop.innerText = originalStopText;
+            }).finally(() => {
+                btnStart.disabled = false;
+                btnStop.disabled = false;
+                if (action === 'start') btnStart.innerText = 'START MONITORING';
+                if (action === 'stop') btnStop.innerText = 'STOP';
             });
-            if(action === 'start') addLog("Monitoring started");
-            if(action === 'stop') addLog("Monitoring stopped");
-            if(action === 'reset') addLog("Session reset");
+        }
+
+        function setStatusClass(el, kind) {
+            el.className = 'value ' + kind;
+        }
+
+        function renderReliabilityPanel(data, trained) {
+            const panel = document.getElementById('reliability-panel');
+            const rel = data.modality_reliability || {};
+            const attn = data.modality_attention || {};
+            const labels = { keyboard: 'Keyboard', speech: 'Speech', facial: 'Facial', eye_pupil: 'Eye/Pupil', handwriting: 'Handwriting' };
+
+            if (!data.is_live_monitoring) {
+                panel.innerHTML = '<div class="na-banner">Start monitoring to view reliability and attention</div>';
+                return;
+            }
+            if (!trained) {
+                panel.innerHTML = '<div class="na-banner">ATTENTION NOT AVAILABLE<br><span style="font-size:0.85em;font-weight:normal;">Architecture test only — untrained weights</span></div>';
+                return;
+            }
+
+            let html = '';
+            for (const key of ['keyboard', 'speech', 'facial', 'eye_pupil', 'handwriting']) {
+                const rPct = ((rel[key] || 0) * 100).toFixed(1);
+                const aPct = ((attn[key] || 0) * 100).toFixed(1);
+                html += `<div class="list-row">
+                    <span>${labels[key]}</span>
+                    <span class="attention-val">
+                        Rel ${rPct}% · Attn ${aPct}%
+                        <div class="attention-bar-container"><div class="attention-bar" style="width:${aPct}%"></div></div>
+                    </span>
+                </div>`;
+            }
+            panel.innerHTML = html;
+        }
+
+        function renderHistory(history, trained) {
+            const body = document.getElementById('history-body');
+            if (!history || history.length === 0) {
+                body.innerHTML = '<tr><td colspan="3" style="color:var(--text-secondary)">No history yet</td></tr>';
+                return;
+            }
+            body.innerHTML = history.slice().reverse().map(h => {
+                const state = trained ? h.prediction : (h.prediction === 'ARCHITECTURE_TEST' ? 'DEBUG' : h.prediction);
+                const pct = h.stress_prob_pct != null ? `${h.stress_prob_pct}%` : '—';
+                return `<tr><td>${h.timestamp}</td><td>${state}</td><td>${pct}</td></tr>`;
+            }).join('');
+        }
+
+        function modalityHardwareStatus(data, mod) {
+            const map = {
+                keyboard: data.keyboard_status,
+                speech: data.mic_status,
+                facial: data.face_status,
+                eye: data.eye_status,
+                handwriting: data.handwriting_status,
+            };
+            const st = map[mod] || 'UNKNOWN';
+            if (st.includes('HARDWARE_UNAVAILABLE') || st.includes('ERROR')) return 'UNAVAILABLE';
+            return st;
         }
 
         let lastPolled = performance.now();
-        
+
         function updateDashboard() {
-            fetch('/status')
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), 2000);
+            
+            fetch('/status', { signal: controller.signal })
                 .then(res => res.json())
                 .then(data => {
+                    clearTimeout(id);
                     const now = performance.now();
-                    const pollLat = Math.round(now - lastPolled);
                     lastPolled = now;
+                    document.getElementById('conn-status').innerText = 'CONNECTED';
+                    setStatusClass(document.getElementById('conn-status'), 'status-green');
+
+                    const trained = data.model_status === 'TRAINED';
+                    const live = data.is_live_monitoring;
+                    const predictionsOk = data.predictions_available === true;
+
+                    // System status header
+                    const sysEl = document.getElementById('sys-status');
+                    sysEl.innerText = '● ' + (data.status || 'UNKNOWN');
+                    if (data.status === 'LIVE') setStatusClass(sysEl, 'status-green');
+                    else if (data.status === 'ARCHITECTURE_TEST_ONLY') setStatusClass(sysEl, 'status-amber');
+                    else if (data.status === 'LOADING') setStatusClass(sysEl, 'status-neutral');
+                    else setStatusClass(sysEl, 'status-neutral');
+
+                    // Model / data cards
+                    const modelEl = document.getElementById('model-status');
+                    modelEl.innerText = data.model_status || 'UNKNOWN';
+                    modelEl.className = 'card-value ' + (trained ? 'status-green' : 'status-amber');
+                    document.getElementById('model-subtext').innerText = trained
+                        ? (data.checkpoint_name || 'Trained checkpoint loaded')
+                        : 'ARCHITECTURE TEST ONLY';
+
+                    document.getElementById('data-status').innerText = data.dataset_name || 'NONE';
                     
+                    const p_source = data.prediction_source === 'trained_model' ? 'TRAINED' : 'DEBUG (UNTRAINED)';
+                    const u_mods = data.usable_modalities && data.usable_modalities.length > 0 ? data.usable_modalities.join(', ') : 'None';
+                    document.getElementById('data-subtext').innerText = trained
+                        ? `Source: ${p_source} | Usable: ${u_mods}`
+                        : 'No valid stress checkpoint';
+
                     // Session time
-                    if (data.is_live_monitoring && data.session_start_time > 0) {
-                        const elapsed = (Date.now()/1000) - data.session_start_time;
-                        document.getElementById('session-time').innerText = formatSessionTime(elapsed);
+                    if (live && data.session_start_time > 0) {
+                        document.getElementById('session-time').innerText = formatSessionTime(Date.now()/1000 - data.session_start_time);
                     }
-                    
+
                     // Camera
                     const camConnected = data.camera_connected;
-                    const faceDet = data.face_detected;
-                    
-                    if(camConnected && prevState.camera_connected === false) addLog("Camera connected");
-                    if(!camConnected && prevState.camera_connected === true) addLog("Camera disconnected");
-                    if(faceDet && !prevState.face_detected) addLog("Face detected");
-                    if(!faceDet && prevState.face_detected) addLog("Face lost");
-                    
+                    if (camConnected && prevState.camera_connected === false) addLog('Camera connected');
+                    if (!camConnected && prevState.camera_connected === true) addLog('Camera disconnected');
+                    if (data.face_detected && !prevState.face_detected) addLog('Face detected');
+                    if (!data.face_detected && prevState.face_detected) addLog('Face lost');
+                    if (trained && !prevState.predictions_available && predictionsOk) addLog('Trained model active — predictions enabled');
+                    if (!trained && prevState.model_status === 'LOADING' && data.model_status === 'UNTRAINED') addLog('Model loaded in UNTRAINED mode');
+
                     prevState = data;
 
                     document.getElementById('stat-cam-conn').innerText = camConnected ? 'ONLINE' : 'OFFLINE';
                     document.getElementById('stat-cam-conn').style.color = camConnected ? 'var(--status-green)' : 'var(--status-red)';
                     document.getElementById('cam-head-status').innerText = camConnected ? '● ONLINE' : '● OFFLINE';
                     document.getElementById('cam-head-status').style.color = camConnected ? 'var(--status-green)' : 'var(--status-red)';
-                    
+
                     const camImg = document.getElementById('camera-stream');
                     const camOfflineText = document.getElementById('cam-offline-text');
-                    
-                    if(!camConnected) {
+                    if (!camConnected) {
                         camImg.style.display = 'none';
                         camOfflineText.style.display = 'block';
                         document.getElementById('stat-face-det').innerText = 'UNAVAILABLE';
@@ -613,95 +538,110 @@
                     } else {
                         camImg.style.display = 'block';
                         camOfflineText.style.display = 'none';
-                        if(faceDet) {
-                            document.getElementById('stat-face-det').innerText = 'DETECTED';
-                            document.getElementById('stat-face-det').style.color = 'var(--status-green)';
-                        } else {
-                            document.getElementById('stat-face-det').innerText = 'NO FACE';
-                            document.getElementById('stat-face-det').style.color = 'var(--status-amber)';
-                        }
+                        document.getElementById('stat-face-det').innerText = data.face_detected ? 'FACE DETECTED' : 'NO FACE';
+                        document.getElementById('stat-face-det').style.color = data.face_detected ? 'var(--status-green)' : 'var(--status-amber)';
                     }
 
-                    // Ensure camera stream refreshes without cache if needed, but MJPEG stream usually handles itself.
-                    
                     const frameAge = data.last_frame_timestamp > 0 ? Math.round((Date.now()/1000 - data.last_frame_timestamp)*1000) : 0;
-                    document.getElementById('stat-frame-age').innerText = (camConnected && frameAge < 5000) ? `${frameAge} ms` : '-- ms';
-                    document.getElementById('stat-cam-fps').innerText = camConnected ? data.camera_fps.toFixed(1) : '--';
-                    
-                    // Performance
-                    const dtMs = data.latency?.pipeline || 0;
-                    document.getElementById('rt-ms').innerText = `${Math.round(dtMs)} ms`;
-                    
-                    // Hz calculation requires observing cycles, we can roughly calculate it if we track successful_cycles over time, 
-                    // but the backend doesn't provide Hz directly in status. We can just show the polling Hz or leave as -- since benchmark calculates it.
-                    // Actually, let's calculate Hz locally based on successful_cycles
-                    if(typeof window.lastCycleCount === 'undefined') {
-                        window.lastCycleCount = data.successful_cycles;
-                        window.lastCycleTime = now;
+                    document.getElementById('stat-frame-age').innerText = (camConnected && frameAge < 5000) ? `${frameAge} ms` : '—';
+                    document.getElementById('stat-cam-fps').innerText = camConnected ? (data.camera_fps || 0).toFixed(1) : '—';
+
+                    // Current state panel
+                    const stateEl = document.getElementById('current-state');
+                    const probGrid = document.getElementById('prob-grid');
+                    if (!live) {
+                        stateEl.innerText = 'IDLE';
+                        stateEl.className = 'current-state status-neutral';
+                        probGrid.style.display = 'none';
+                    } else if (!trained) {
+                        stateEl.innerText = 'ARCHITECTURE TEST ONLY';
+                        stateEl.className = 'current-state status-amber';
+                        probGrid.style.display = 'none';
+                    } else if (predictionsOk) {
+                        stateEl.innerText = data.prediction || '—';
+                        stateEl.className = 'current-state ' + (data.prediction === 'STRESS' ? 'status-red' : 'status-green');
+                        probGrid.style.display = 'grid';
+                        document.getElementById('stress-pct').innerText = ((data.stress_probability || 0) * 100).toFixed(1) + '%';
+                        document.getElementById('nonstress-pct').innerText = ((data.non_stress_probability || 0) * 100).toFixed(1) + '%';
                     } else {
-                        const elapsedSec = (now - window.lastCycleTime) / 1000;
-                        if(elapsedSec >= 1.0) {
-                            const hz = (data.successful_cycles - window.lastCycleCount) / elapsedSec;
-                            if(data.is_live_monitoring) {
-                                document.getElementById('rt-hz').innerText = `${hz.toFixed(1)} Hz`;
-                                document.getElementById('perf-hz').innerText = `${hz.toFixed(1)} Hz`;
-                            } else {
-                                document.getElementById('rt-hz').innerText = `-- Hz`;
-                                document.getElementById('perf-hz').innerText = `-- Hz`;
-                            }
-                            window.lastCycleCount = data.successful_cycles;
-                            window.lastCycleTime = now;
-                        }
+                        stateEl.innerText = 'WARMING UP';
+                        stateEl.className = 'current-state status-neutral';
+                        probGrid.style.display = 'none';
                     }
 
-                    document.getElementById('perf-model').innerText = `${(data.latency?.fusion || 0).toFixed(1)} ms`;
-                    document.getElementById('perf-feat').innerText = `${(data.max_extraction_ms || 0).toFixed(1)} ms`;
-                    document.getElementById('perf-dropped').innerText = data.dropped_cycles;
+                    document.getElementById('detail-model').innerText = data.model_status || '—';
+                    document.getElementById('detail-inference').innerText = trained ? 'TRAINED' : 'ARCHITECTURE TEST';
+                    document.getElementById('detail-prediction').innerText = predictionsOk ? (data.prediction || '—') : 'NOT AVAILABLE';
+                    document.getElementById('detail-confidence').innerText = predictionsOk && data.confidence != null
+                        ? ((data.confidence * 100).toFixed(1) + '%') : '—';
+
+                    // Performance
+                    const lat = data.latency || {};
+                    document.getElementById('rt-ms').innerText = `${Math.round(lat.total_pipeline_ms || data.pipeline_latency_ms || 0)} ms`;
+                    document.getElementById('perf-feat').innerText = `${(lat.feature_extraction_ms || data.max_extraction_ms || 0).toFixed(1)} ms`;
+                    document.getElementById('perf-model').innerText = `${(lat.model_inference_ms || data.processing_latency_ms || 0).toFixed(1)} ms`;
+                    document.getElementById('perf-total').innerText = `${(lat.total_pipeline_ms || data.pipeline_latency_ms || 0).toFixed(1)} ms`;
+                    document.getElementById('perf-failed').innerText = data.failed_cycles || 0;
+
+                    const pct = data.latency_percentiles || {};
+                    const schedHz = pct.scheduler_frequency_hz;
+                    const elapsedSec = (now - lastCycleTime) / 1000;
+                    if (elapsedSec >= 1.0) {
+                        const hz = schedHz != null ? schedHz : (lastCycleCount === undefined ? 0 : (data.successful_cycles - lastCycleCount) / elapsedSec);
+                        const hzText = live ? `${Number(hz).toFixed(1)} Hz` : '-- Hz';
+                        document.getElementById('rt-hz').innerText = hzText;
+                        document.getElementById('perf-hz').innerText = hzText;
+                        lastCycleCount = data.successful_cycles;
+                        lastCycleTime = now;
+                    }
 
                     // Modalities
                     const fills = data.buffer_fills || {};
-                    const mask = data.fusion_mask || [0,0,0,0,0]; // ['audio', 'face', 'keystroke', 'handwriting', 'eye']
-                    // order: keyboard, speech, facial, eye, handwriting
-                    const mapIdx = { 'speech': 0, 'facial': 1, 'keyboard': 2, 'handwriting': 3, 'eye': 4 };
-                    
+                    const mask = data.fusion_mask || [0,0,0,0,0];
+                    const mapIdx = { speech: 0, facial: 1, keyboard: 2, handwriting: 3, eye: 4 };
+
                     mods.forEach(mod => {
                         let fillCount = 0;
                         let active = false;
-                        
-                        if(mod === 'speech') { fillCount = fills.audio || 0; active = mask[mapIdx.speech] > 0; }
-                        if(mod === 'facial') { fillCount = fills.face || 0; active = mask[mapIdx.facial] > 0; }
-                        if(mod === 'keyboard') { fillCount = fills.keystroke || 0; active = mask[mapIdx.keyboard] > 0; }
-                        if(mod === 'handwriting') { fillCount = fills.handwriting || 0; active = mask[mapIdx.handwriting] > 0; }
-                        if(mod === 'eye') { fillCount = fills.eye || 0; active = mask[mapIdx.eye] > 0; }
+                        if (mod === 'speech') { fillCount = fills.audio || 0; active = mask[mapIdx.speech] > 0; }
+                        if (mod === 'facial') { fillCount = fills.face || 0; active = mask[mapIdx.facial] > 0; }
+                        if (mod === 'keyboard') { fillCount = fills.keystroke || 0; active = mask[mapIdx.keyboard] > 0; }
+                        if (mod === 'handwriting') { fillCount = fills.handwriting || 0; active = mask[mapIdx.handwriting] > 0; }
+                        if (mod === 'eye') { fillCount = fills.eye || 0; active = mask[mapIdx.eye] > 0; }
 
                         const card = document.getElementById('mod-' + mod);
                         const statusSpan = card.querySelector('.mod-status');
-                        const tl = document.getElementById('tl-' + mod).children;
-                        
-                        if(!data.is_live_monitoring) {
+                        const hw = modalityHardwareStatus(data, mod);
+
+                        if (hw === 'UNAVAILABLE') {
+                            card.className = 'mod-card offline';
+                            statusSpan.innerText = 'UNAVAILABLE';
+                        } else if (!live) {
                             card.className = 'mod-card offline';
                             statusSpan.innerText = 'OFFLINE';
                             fillCount = 0;
-                        } else if(active) {
+                        } else if (active) {
                             card.className = 'mod-card active';
-                            statusSpan.innerText = mod==='facial'||mod==='eye' ? 'DETECTED' : 'ACTIVE';
+                            statusSpan.innerText = (mod === 'facial' || mod === 'eye') ? 'ACTIVE' : 'ACTIVE';
                         } else {
                             card.className = 'mod-card stale';
-                            statusSpan.innerText = mod==='facial'||mod==='eye' ? 'NO FACE' : 'STALE';
+                            statusSpan.innerText = (mod === 'facial' || mod === 'eye') ? 'NO SIGNAL' : 'WAITING';
                         }
-                        
+
                         card.querySelector('.mod-freshness').innerText = `Window: ${fillCount}/10`;
-                        
-                        for(let i=0; i<10; i++) {
-                            tl[i].className = i < fillCount ? 'timeline-step filled' : 'timeline-step';
-                        }
+                        const tl = document.getElementById('tl-' + mod).children;
+                        for (let i = 0; i < 10; i++) tl[i].className = i < fillCount ? 'timeline-step filled' : 'timeline-step';
                     });
 
+                    renderReliabilityPanel(data, trained);
+                    renderHistory(data.prediction_history || [], trained);
                 })
-                .catch(e => console.error(e))
-                .finally(() => {
-                    setTimeout(updateDashboard, 100);
-                });
+                .catch(() => {
+                    clearTimeout(id);
+                    document.getElementById('conn-status').innerText = 'DELAYED';
+                    setStatusClass(document.getElementById('conn-status'), 'status-amber');
+                })
+                .finally(() => setTimeout(updateDashboard, 500));
         }
 
         updateDashboard();

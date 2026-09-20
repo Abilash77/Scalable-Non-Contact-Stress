@@ -1,0 +1,7 @@
+{
+    "dataset": "DriveDB",
+    "samples": 34,
+    "features": "Physiology (ECG, EMG, GSR, Respiration)",
+    "split_strategy": "subject-level simulation",
+    "training_status": "READY"
+}

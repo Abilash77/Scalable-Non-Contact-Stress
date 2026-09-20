@@ -1,5 +1,5 @@
 # ============================================================
-# Environment and Credentials
+# Environment and Credentials (CRITICAL - DO NOT REMOVE)
 # ============================================================
 .env
 .env.*
@@ -8,9 +8,13 @@ credentials.json
 service-account.json
 secrets.json
 token.json
+*.pem
+*.key
+credentials*
+secrets*
 
 # ============================================================
-# Datasets — NEVER push data
+# Datasets — Restricted/EULA-controlled raw data
 # ============================================================
 data/
 datasets/
@@ -19,108 +23,12 @@ raw/
 processed/
 
 # ============================================================
-# Data file types
+# Local Logs and Temporary Output
 # ============================================================
-*.csv
-*.tsv
-*.xlsx
-*.xls
-*.parquet
-*.feather
-*.mat
-*.pkl
-*.pickle
-*.dat
-*.db
-*.sqlite
-
-# ============================================================
-# Audio / Video / Image data
-# ============================================================
-*.wav
-*.mp3
-*.flac
-*.mp4
-*.avi
-*.mov
-*.mkv
-*.jpg
-*.jpeg
-*.png
-*.bmp
-*.tif
-*.tiff
-
-# ============================================================
-# Numerical arrays
-# ============================================================
-*.npy
-*.npz
-
-# ============================================================
-# Archives
-# ============================================================
-*.zip
-*.rar
-*.7z
-*.tar
-*.tar.gz
-*.gz
-
-# ============================================================
-# Model checkpoints and weights
-# ============================================================
-checkpoints/
-results/checkpoints/
-models/
-weights/
-saved_models/
-trained_models/
-
-*.keras
-*.h5
-*.hdf5
-*.pt
-*.pth
-*.ckpt
-*.onnx
-*.pb
-*.tflite
-*.bin
-*.safetensors
-*.joblib
-
-# ============================================================
-# Logs and generated outputs
-# ============================================================
-*.log
-profile.stats
 .system_generated/
 runs/
 outputs/
-
-# ============================================================
-# Local experiment outputs (not project source)
-# ============================================================
-FINAL_ACCEPTANCE_REPORT.md
-FINAL_FIVE_MODALITY_LIVE_VERIFICATION.md
-FINAL_PROJECT_STATUS.md
-FINAL_TRAIN_ONCE_RUN_MANY_REPORT.md
-SYSTEM_HEALTH_CHECK.md
-installed_packages.txt
-task.md
-walkthrough.md
-implementation_plan.md
-docs_experiment_overview.md
-docs_local_test.md
-docs_test_matrix.md
-research_runtime_architecture.md
-results/FINAL_ACCEPTANCE_REPORT.md
-results/realtime_stability_report.md
-results/repository_cleanup_report.md
-results/dataset_research/
-results/source_data/
-results/swell_kw/
+profile.stats
 
 # ============================================================
 # Python
@@ -151,3 +59,4 @@ node_modules/
 # ============================================================
 .DS_Store
 Thumbs.db
+

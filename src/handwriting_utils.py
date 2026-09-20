@@ -15,10 +15,16 @@ def extract_handwriting_features(img_path=None, img_array=None):
     if img_array is None or img_array.size == 0:
         return np.zeros(9)
         
-    # Bug 1 Fix: Ensure image is grayscale before thresholding
-    if len(img_array.shape) == 3 and img_array.shape[2] == 3:
-        # We assume BGR input from OpenCV runtime
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
+    if len(img_array.shape) > 2:
+        if img_array.shape[2] == 4:
+            # Blend with white background using alpha channel
+            alpha = img_array[:, :, 3] / 255.0
+            bg = np.ones_like(img_array[:, :, :3]) * 255
+            fg = img_array[:, :, :3]
+            blended = (fg * alpha[:, :, None] + bg * (1 - alpha[:, :, None])).astype(np.uint8)
+            img_array = cv2.cvtColor(blended, cv2.COLOR_BGR2GRAY)
+        else:
+            img_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2GRAY)
         
     # Binarize
     _, binary = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)

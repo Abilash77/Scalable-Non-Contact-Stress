@@ -1,0 +1,15 @@
+{
+  "dataset": "Stress Detection by Keystroke,App & Mouse Changes",
+  "owner": "Chamindu Weerasinghe",
+  "url": "https://www.kaggle.com/datasets/chaminduweerasinghe/stress-detection-by-keystrokeapp-mouse-changes",
+  "participants": 2,
+  "labeled_windows": 66,
+  "stress_windows": "Unknown exact count, subset of 66",
+  "non_stress_windows": "Unknown exact count, subset of 66",
+  "keyboard_data": true,
+  "stress_labels": true,
+  "subject_split_possible": false,
+  "license": "CC BY-SA 4.0",
+  "model_compatibility": "Requires Feature Mapping",
+  "final_decision": "REJECT — INSUFFICIENT PARTICIPANT DATA"
+}

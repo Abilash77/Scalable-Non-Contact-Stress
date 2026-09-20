@@ -367,7 +367,7 @@ try:
         audio_f = extract_audio_features(audio_segment=np.random.rand(16000).astype(np.float32), sr=16000)
         key_f = extract_keystroke_features([{'key': 'a', 'action': 'press', 'time': time.time()}])
         hw_f = extract_handwriting_features(img_array=raw_image)
-        face_f, _ = extract_face_features(raw_image)
+        face_f, _, _ = extract_face_features(raw_image)
         eye_f, _ = extract_eye_features(raw_image)
         out = fast_fusion_model({
             'input_audio': tf.convert_to_tensor(np.expand_dims(np.tile(audio_f, (10, 1)), axis=0), dtype=tf.float32),
@@ -384,7 +384,7 @@ try:
         audio_f = extract_audio_features(audio_segment=np.random.rand(16000).astype(np.float32), sr=16000)
         key_f = extract_keystroke_features([{'key': 'a', 'action': 'press', 'time': time.time()}])
         hw_f = extract_handwriting_features(img_array=raw_image)
-        face_f, _ = extract_face_features(raw_image)
+        face_f, _, _ = extract_face_features(raw_image)
         eye_f, _ = extract_eye_features(raw_image)
         out = fast_fusion_model({
             'input_audio': tf.convert_to_tensor(np.expand_dims(np.tile(audio_f, (10, 1)), axis=0), dtype=tf.float32),
@@ -460,7 +460,7 @@ print("\n[Test 14] Test Invalid Input Processing...")
 try:
     f_audio = extract_audio_features(audio_segment=None, sr=16000)
     assert f_audio.shape == (169,)
-    f_face, st_face = extract_face_features(None)
+    f_face, st_face, _ = extract_face_features(None)
     assert f_face.shape == (12,) and st_face == "CAMERA_UNAVAILABLE"
     f_eye, st_eye = extract_eye_features(np.array([]))
     assert f_eye.shape == (5,) and st_eye == "CAMERA_UNAVAILABLE"
@@ -476,7 +476,7 @@ except Exception as e:
 print("\n[Test 15] Test Noisy/Degenerate Input Processing...")
 try:
     noisy_img = np.zeros((240, 320, 3), dtype=np.uint8)
-    f_face, st_face = extract_face_features(noisy_img)
+    f_face, st_face, _ = extract_face_features(noisy_img)
     assert st_face == "NO_FACE_DETECTED"
     
     f_hw = extract_handwriting_features(img_array=np.zeros((100, 100), dtype=np.uint8))

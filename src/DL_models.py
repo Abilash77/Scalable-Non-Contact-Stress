@@ -150,7 +150,6 @@ def build_swell_fusion_model(input_shapes, num_classes=2):
         'unimodal_keystroke': unimodal_preds[2],
         'unimodal_handwriting': unimodal_preds[3],
         'unimodal_eye': unimodal_preds[4],
-        'unimodal_swell': unimodal_preds[5],
         'reliabilities': r_concat,
         'alphas': alphas
     }, name="SWELL_Adapter_Fusion_Model")
@@ -166,16 +165,28 @@ def focal_calibration_loss(y_true, y_pred, gamma=2.0):
     focal_loss = -tf.math.pow((1.0 - p_t), gamma) * tf.math.log(p_t)
     return tf.reduce_mean(focal_loss)
 
-def custom_fusion_loss(lambda1=0.1, lambda2=0.01):
+def custom_fusion_loss(lambda1=0.1, lambda2=0.01, class_weights=None):
+    def get_sample_weights(y_true):
+        if class_weights is None:
+            return 1.0
+        y_true_flat = tf.cast(tf.reshape(y_true, [-1]), tf.int32)
+        w0 = tf.constant(class_weights[0], dtype=tf.float32)
+        w1 = tf.constant(class_weights[1], dtype=tf.float32)
+        return tf.where(tf.equal(y_true_flat, 1), w1, w0)
+
     def fusion_output_loss(y_true, y_pred):
         l_ce = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
         l_cal = focal_calibration_loss(y_true, y_pred)
-        # Note: L2 is automatically added by Keras to the total model loss during training 
-        # because we added kernel_regularizer=L2() to the Dense/GRU layers.
-        return l_ce + lambda2 * l_cal
+        loss = l_ce + lambda2 * l_cal
+        if class_weights is not None:
+            loss = loss * get_sample_weights(y_true)
+        return loss
         
     def unimodal_loss(y_true, y_pred):
-        return lambda1 * tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
+        loss = lambda1 * tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred)
+        if class_weights is not None:
+            loss = loss * get_sample_weights(y_true)
+        return loss
         
     return {
         'fusion_output': fusion_output_loss,
@@ -183,8 +194,7 @@ def custom_fusion_loss(lambda1=0.1, lambda2=0.01):
         'unimodal_face': unimodal_loss,
         'unimodal_keystroke': unimodal_loss,
         'unimodal_handwriting': unimodal_loss,
-        'unimodal_eye': unimodal_loss,
-        'unimodal_swell': unimodal_loss,
+        'unimodal_eye': unimodal_loss
     }
 
 def get_model(model_name='fusion', input_shapes=None, num_classes=2, params=None):
@@ -208,5 +218,50 @@ def get_model(model_name='fusion', input_shapes=None, num_classes=2, params=None
                 'eye': (10, 5)
             }
         return build_swell_fusion_model(input_shapes, num_classes=num_classes)
+    elif model_name == 'drivedb_fusion':
+        if input_shapes is None:
+            input_shapes = {'physiology': (10, 4)}
+        return build_drivedb_fusion_model(input_shapes, num_classes=num_classes)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
+
+def build_drivedb_fusion_model(input_shapes, num_classes=2):
+    modality_names = ['physiology']
+    num_modalities = len(modality_names)
+    
+    inputs = {}
+    for m in modality_names:
+        if m in input_shapes:
+            inputs[f"input_{m}"] = Input(shape=input_shapes[m], name=f"input_{m}")
+        
+    mask_input = Input(shape=(num_modalities,), name="input_mask", dtype=tf.float32)
+    inputs['input_mask'] = mask_input
+    
+    hm_list = []
+    unimodal_preds = []
+    
+    for i, m in enumerate(modality_names):
+        branch = ModalityBranch(encoder_units=128, gru_units=64, name=f"branch_{m}")
+        hm = branch(inputs[f"input_{m}"])
+        hm_list.append(hm)
+        
+        u_pred = Dense(num_classes, activation='softmax', name=f"unimodal_{m}", kernel_regularizer=L2(1e-4))(hm)
+        unimodal_preds.append(u_pred)
+        
+    rel_att = ReliabilityAttention(num_modalities)
+    r_list, alphas = rel_att(hm_list, mask_input)
+    
+    hm_stack = tf.keras.layers.Lambda(lambda x: tf.stack(x, axis=1))(hm_list)
+    F = FeatureFusion()([hm_stack, alphas])
+    
+    outputs = Dense(num_classes, activation='softmax', name="fusion_output", kernel_regularizer=L2(1e-4))(F)
+    r_concat = tf.keras.layers.Lambda(lambda x: tf.concat(x, axis=-1), name="reliabilities")(r_list)
+    
+    model = Model(inputs=inputs, outputs={
+        'fusion_output': outputs,
+        'unimodal_physiology': unimodal_preds[0],
+        'reliabilities': r_concat,
+        'alphas': alphas
+    }, name="DriveDB_Fusion_Model")
+    
+    return model

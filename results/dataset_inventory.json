@@ -1,0 +1,58 @@
+{
+    "total_files": 12,
+    "pam_records": 48,
+    "keystroke_logs": [
+        {
+            "file": "data/keystroke-stress/data\\keys_and_mouse\\1430503249.txt",
+            "size": 2738713
+        },
+        {
+            "file": "data/keystroke-stress/data\\keys_and_mouse\\1430599923.txt",
+            "size": 847169
+        }
+    ],
+    "pam_files": [
+        {
+            "file": "data/keystroke-stress/data\\self_report\\pam_log.txt",
+            "size": 4800
+        }
+    ],
+    "other_files": [
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430449492.txt",
+            "size": 45957
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430460927.txt",
+            "size": 317437
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430504929.txt",
+            "size": 204718
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430577000.txt",
+            "size": 58490
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430599785.txt",
+            "size": 12533
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\1430599923.txt",
+            "size": 12533
+        },
+        {
+            "file": "data/keystroke-stress/data\\foreground_app\\sample_txt",
+            "size": 45
+        },
+        {
+            "file": "data/keystroke-stress/data\\keys_and_mouse\\sample_txt",
+            "size": 60
+        },
+        {
+            "file": "data/keystroke-stress/data\\self_report\\ema_web_log.txt",
+            "size": 9917
+        }
+    ]
+}

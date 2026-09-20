@@ -1,0 +1,9 @@
+{
+  "participant_leakage": false,
+  "session_leakage": false,
+  "duplicate_windows": false,
+  "identical_feature_vectors": false,
+  "label_distribution_valid": true,
+  "details": {},
+  "PASS": true
+}

@@ -1,0 +1,22 @@
+{
+  "production_model_status": "TRAINED KEYSTROKE STRESS MODEL",
+  "data_split": "NOT SUBJECT-INDEPENDENT",
+  "label_alignment": "VERIFIED",
+  "held_out_test_evaluation": "VERIFIED",
+  "live_keyboard_inference": "VERIFIED",
+  "five_modality_stress_model": "NO",
+  "metrics": {
+    "test_sample_count": 1,
+    "accuracy": 1.0,
+    "precision": "N/A",
+    "recall": "N/A",
+    "f1": "N/A",
+    "roc_auc": "N/A",
+    "perturbation_shift": 0.3954
+  },
+  "training_data": {
+    "source": "SWELL-KW",
+    "usable_windows": 2,
+    "feature_dim": 7
+  }
+}

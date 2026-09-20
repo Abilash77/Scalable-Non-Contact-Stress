@@ -1,0 +1,25 @@
+{
+    "dataset_name": "DriveDB_Fallback",
+    "model_architecture": "drivedb_fusion",
+    "is_trained": true,
+    "training_timestamp": "2026-09-20T16:57:54.545673",
+    "expected_input_shapes": {
+        "physiology": [
+            10,
+            4
+        ]
+    },
+    "expected_output_shape": [
+        2
+    ],
+    "modality_order": [
+        "physiology"
+    ],
+    "class_mapping": {
+        "0": "REST",
+        "1": "STRESS"
+    },
+    "training_subjects": [],
+    "validation_subjects": [],
+    "test_subjects": []
+}

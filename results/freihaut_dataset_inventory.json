@@ -1,0 +1,13 @@
+{
+    "laboratory_participants": 53,
+    "online_participants": 924,
+    "total_participants": 977,
+    "usable_participants": 977,
+    "files": 153,
+    "records": 1954,
+    "sessions_trials": 2,
+    "conditions": [
+        "high-stress",
+        "low-stress"
+    ]
+}

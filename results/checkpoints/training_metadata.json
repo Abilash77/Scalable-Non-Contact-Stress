@@ -1,0 +1,59 @@
+{
+    "dataset_name": "Freihaut & G\u00f6ritz (2021)",
+    "model_architecture": "fusion",
+    "is_trained": true,
+    "is_prototype": false,
+    "trained_modalities": [
+        "keyboard"
+    ],
+    "training_timestamp": "2026-09-20T20:19:23.364469",
+    "expected_input_shapes": {
+        "audio": [
+            10,
+            169
+        ],
+        "face": [
+            10,
+            12
+        ],
+        "keystroke": [
+            10,
+            7
+        ],
+        "handwriting": [
+            10,
+            9
+        ],
+        "eye": [
+            10,
+            5
+        ]
+    },
+    "expected_output_shape": [
+        2
+    ],
+    "modality_order": [
+        "audio",
+        "face",
+        "keystroke",
+        "handwriting",
+        "eye"
+    ],
+    "class_mapping": {
+        "0": "NON-STRESS",
+        "1": "STRESS"
+    },
+    "train_participants": 744,
+    "validation_participants": 159,
+    "test_participants": 161,
+    "train_samples": 4664,
+    "validation_samples": 979,
+    "test_samples": 954,
+    "test_metrics": {
+        "accuracy": 0.46226415094339623,
+        "precision": 0.23476702508960573,
+        "recall": 0.6036866359447005,
+        "f1": 0.33806451612903227,
+        "roc_auc": 0.5276278848739128
+    }
+}
