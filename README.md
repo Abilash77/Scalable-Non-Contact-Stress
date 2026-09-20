@@ -2,291 +2,164 @@
 
 ![Status](https://img.shields.io/badge/Status-Architecture%20Test%20Only-yellow)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![TensorFlow](https://img.shields.io/badge/TensorFlow-2.15%2B-orange)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-2.18-orange)
 
+A real-time, reliability-aware, hybrid multimodal stress detection system (RA-HMSD) that asynchronously processes five non-contact behavioral and physiological modalities — Speech, Facial, Keyboard, Handwriting, and Eye/Pupil — to classify stress. The system gracefully handles missing or unreliable modalities through a learned attention mechanism.
 
-A modular, real-time, hybrid multimodal stress detection system (RA-HMSD) capable of asynchronously processing non-contact behavioral and physiological signals (Speech, Facial, Keyboard, Handwriting, and Eye/Pupil) to classify stress.
-
-## Overview
-This repository contains the engineering implementation of the RA-HMSD architecture. The system introduces a reliability-aware multimodal fusion mechanism that dynamically attends to available modalities while robustly handling asynchronous or entirely missing data streams without blocking real-time inference.
-
-## Key Features
-- **Decoupled Architecture**: Fast asynchronous workers for feature extraction that do not block the central model inference.
-- **Dynamic Modality Masking**: Automatically ignores stale or missing modalities using a temporal state mask.
-- **Reliability-Aware Fusion**: Learns to weight features not just by their content, but by the estimated reliability of the modality at that moment.
-- **Professional Diagnostic Dashboard**: A real-time web UI showing 10 Hz telemetry, individual sensor statuses, temporal windows, and internal pipeline latencies.
-
-## System Architecture
-
-The overarching system leverages individual modality encoders (CNN/LSTM based) that feed into a central attention and fusion module.
-
-## Architecture Flow
+## Architecture
 
 ```mermaid
 flowchart TD
-    U[User] --> S[Non-Contact / Behavioral Signals]
+    U[User] --> S[Non-Contact Signals]
     S --> MA[Multimodal Acquisition]
-    
+
     subgraph Modalities
-        K[Keyboard]
-        SP[Speech]
-        F[Facial]
-        E[Eye/Pupil]
-        H[Handwriting]
+        K[Keyboard<br/>7D]
+        SP[Speech<br/>169D]
+        F[Facial<br/>12D]
+        E[Eye/Pupil<br/>5D]
+        H[Handwriting<br/>9D]
     end
-    
-    MA --> K
-    MA --> SP
-    MA --> F
-    MA --> E
-    MA --> H
-    
-    K --> FE[Modality-Specific Feature Extraction]
-    SP --> FE
-    F --> FE
-    E --> FE
-    H --> FE
-    
-    FE --> TW[Temporal Windowing / Sequence Formation]
-    TW --> ME[Modality Encoders]
-    ME --> TM[Temporal Modeling]
-    TM --> RE[Reliability Estimation]
-    TM --> RAA[Reliability-Aware Attention]
+
+    MA --> K & SP & F & E & H
+
+    K & SP & F & E & H --> FE[Feature Extraction Workers]
+    FE --> TW[Temporal Windowing T=10]
+    TW --> ME[Modality Encoders Dense+GRU]
+    ME --> RE[Reliability Estimation]
+    ME --> RAA[Reliability-Aware Attention]
     RE --> RAA
     RAA --> MF[Multimodal Fusion]
-    MF --> SC[Stress Classifier]
-    SC --> SO[Stress / Non-Stress Output]
+    MF --> SC[Stress Classifier Softmax]
+    SC --> OUT[Stress / Non-Stress + Confidence]
+    OUT --> DASH[Dashboard at localhost:5000]
 ```
 
 ## Multimodal Pipeline
 
-| Modality | Runtime Features | Temporal Input |
-|----------|------------------|----------------|
-| Speech | 169D | 10 × 169 |
-| Facial | 12D | 10 × 12 |
-| Keyboard | 7D | 10 × 7 |
-| Handwriting | 9D | 10 × 9 |
-| Eye/Pupil | 5D | 10 × 5 |
-
-**Speech**: Extracts acoustic and prosodic features representing vocal tension.
-**Facial**: Analyzes geometric action units, head pose, and micro-expressions.
-**Keyboard**: Captures key-hold times, latency, and typing cadence.
-**Handwriting**: Extracts pen pressure, velocity, and stroke dynamics.
-**Eye/Pupil**: Captures gaze patterns, pupil dilation, and blink rate.
+| Modality | Features | Temporal Input | Source |
+|----------|----------|----------------|--------|
+| Speech | 169D (MFCCs, chroma, mel, contrast, ZCR, RMS, F0, jitter, shimmer, formants, silence) | 10 × 169 | `src/audio_utils.py` |
+| Facial | 12D (EAR, head pose, MAR, brow raise, mouth width, lip distance, nose wrinkle, jaw drop) | 10 × 12 | `src/face_utils.py` |
+| Keyboard | 7D (dwell mean/std, flight mean/std, typing speed, pause rate, correction rate) | 10 × 7 | `src/keystroke_utils.py` |
+| Handwriting | 9D (stroke width, slant, density, aspect ratio, pressure proxy, velocity, timing) | 10 × 9 | `src/handwriting_utils.py` |
+| Eye/Pupil | 5D (pupil size L/R, gaze X/Y, eye closure) | 10 × 5 | `src/eye_utils.py` |
 
 ## Reliability-Aware Fusion
 
-The project implements a custom fusion process to gracefully handle noisy or missing modalities. Let $X_m$ be the raw temporal sequence for modality $m$:
+1. **Modality encoding:** `Hm = GRU(Dense(Xm))`
+2. **Reliability:** `rm = σ(Wr · Hm)`
+3. **Attention:** `αm = softmax(Wa · (Hm ⊙ rm) + mask_penalty)`
+4. **Fusion:** `F = Σ αm · Hm`
+5. **Classification:** `ŷ = softmax(Wc · F)`
 
-1. **Modality-specific encoding**: $Z_m = \phi_m(X_m; \theta_m)$
-2. **Temporal representation**: $H_m = \psi_m(Z_m; \omega_m)$
-3. **Reliability estimation**: $r_m = \sigma(W_r H_m + b_r)$
-4. **Attention weighting**: $\alpha_m = \text{softmax}(W_a \cdot f(H_m, r_m))$
-5. **Multimodal fusion**: $F = \sum \alpha_m H_m$
-6. **Classification**: $\hat{y} = \text{softmax}(W_c F + b_c)$
+Missing modalities receive a `-1e9` mask penalty, driving their attention weight to ~0.
 
-*(Note: These equations represent the implemented software architecture and require scientific validation via an end-to-end dataset).*
-
-## Data Flow
-
-The real-time pipeline is strictly decoupled to ensure smooth execution.
+## Real-Time Data Flow
 
 ```mermaid
 flowchart TD
-    Sensors[Webcam / Microphone / Keyboard / Handwriting] --> Workers[Feature Extraction Workers]
-    Workers --> Cache[(Local Feature Cache)]
-    
-    subgraph 10 Hz Inference Loop
-        Cache --> TW[10-Step Temporal Window]
-        TW --> MM[Modality Mask]
-        
-        MM --> |Available modality → extracted features| Fusion[RA-HMSD Fusion Model]
-        MM --> |Missing modality → zero-filled features + mask| Fusion
-        
-        Fusion --> RA[Reliability + Attention]
-        RA --> SC[Stress Classification]
+    Sensors[Webcam / Mic / Keyboard / Canvas] --> Workers[Parallel Feature Workers]
+    Workers --> Cache[(Shared State T=10 Buffers)]
+
+    subgraph InferenceLoop["~10 Hz Inference"]
+        Cache --> TW[Temporal Window + Mask]
+        TW --> Fusion[RA-HMSD Model]
+        Fusion --> Pred[Stress / Non-Stress + Reliability]
     end
-    
-    SC --> Dash[Dashboard / API]
-```
 
-This decoupled architecture:
-- Avoids blocking model inference on slow feature extraction (like deep face/audio models).
-- Supports asynchronous modality updates.
-- Handles stale/missing modalities seamlessly via masking.
-- Reduces unnecessary HTTP/IPC overhead.
-- Allows real-time dashboard updates at ~10 Hz.
-
-## Model Architecture
-
-**RA_HMSD_Fusion_Model**
-Current expected inputs:
-- `audio`: `(batch, 10, 169)`
-- `face`: `(batch, 10, 12)`
-- `keystroke`: `(batch, 10, 7)`
-- `handwriting`: `(batch, 10, 9)`
-- `eye`: `(batch, 10, 5)`
-- `mask`: `(batch, 5)`
-
-Output:
-- `output`: `(batch, 2)`
-
-Current parameter count: **214,166**
-Current model size: **~836.59 KB**
-
-## Training Pipeline
-
-Training is an explicitly separate operation from live inference. To execute training:
-
-```bash
-python train.py
-```
-*(Requires a valid, preprocessed dataset mapped in the `data/` directory).*
-
-## Real-Time Inference Pipeline
-
-To launch the live inference application and dashboard:
-
-```bash
-python run.py
-```
-**Important:** Starting the application does NOT automatically train the model. Inference loads an existing valid checkpoint. If a valid stress checkpoint is unavailable, the application operates safely in **UNTRAINED / ARCHITECTURE TEST ONLY** mode.
-
-## Project Structure
-
-```text
-├── configs/            # Configuration and hyperparameter files
-├── data/               # Raw and processed datasets (Not bundled)
-├── results/            # Validation reports, checkpoints, logs
-├── scripts/
-│   ├── analysis/       # Statistical and error analysis scripts
-│   ├── evaluation/     # Stability tests and metric extraction
-│   ├── preprocessing/  # Data cleaning and feature mapping
-│   ├── realtime/       # Dashboards, webcam server, Flask APIs
-│   └── training/       # Model training scripts
-├── src/                # Core ML architecture and utilities
-│   ├── audio_utils.py
-│   ├── face_utils.py
-│   ├── keystroke_utils.py
-│   ├── handwriting_utils.py
-│   ├── eye_utils.py
-│   └── DL_models.py
-├── templates/          # HTML Templates for the dashboard
-├── run.py              # Main entry point for Real-Time Inference
-├── train.py            # Main entry point for Training
-├── requirements.txt    # Project dependencies
-└── README.md
+    Pred --> API[Flask API + Dashboard]
 ```
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/Abilash77/Scalable-Non-Contact-Stress.git
 cd Scalable-Non-Contact-Stress
-
-# Create a virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 pip install -e .
 ```
 
-## Running the System
+## Running
 
 ```bash
+# Real-time inference + dashboard
 python run.py
+# Open http://localhost:5000
+
+# Training (requires ForDigitStress dataset)
+python train.py
 ```
 
-## Dashboard
-The professional monitoring dashboard operates at `http://localhost:5000/`. It provides:
-- Real-time hardware camera stream with face detection overlays.
-- Independent modality health status and latency.
-- 10-step temporal window buffers.
-- Model reliability and attention coefficients.
-- High-resolution pipeline performance metrics.
-- Start/stop/reset session controls.
+**Important:** Running `python run.py` does NOT train the model. It loads an existing checkpoint. Without a valid stress checkpoint, the system operates in **UNTRAINED / ARCHITECTURE TEST ONLY** mode.
 
-## Dataset
-The intended primary multimodal stress dataset is **ForDigitStress**. 
-**The repository does NOT include the ForDigitStress dataset or any other restricted private datasets.** 
-Dataset access, acquisition, and terms of use must be handled separately through the respective dataset providers. Local preprocessing (`scripts/preprocessing/`) requires the actual physical `.csv` and archive files mapped securely in your local environment.
+## Project Structure
+
+```
+├── src/                    # Core ML: model architecture + feature extractors
+├── scripts/
+│   ├── preprocessing/      # Dataset preprocessing pipelines
+│   ├── training/           # Training scripts
+│   ├── evaluation/         # Stability tests, camera tests
+│   ├── analysis/           # Statistical analysis, plotting
+│   └── realtime/           # Alternative server implementations
+├── configs/                # Experiment configurations
+├── templates/              # Dashboard HTML
+├── data/                   # Datasets (NOT bundled — see below)
+├── results/                # Outputs, logs, checkpoints
+├── run.py                  # Main entry: real-time inference + dashboard
+├── train.py                # Main entry: ForDigitStress training
+├── train_swell.py          # SWELL-KW training pipeline
+├── requirements.txt        # Dependencies
+└── docs/PROJECT_HANDOFF.md # Detailed developer handoff document
+```
+
+## Dataset Policy
+
+**This repository does NOT include datasets, trained checkpoints, or model weights.**
+
+- Private/restricted datasets must be obtained separately from their providers
+- Downloaded archives must not be committed
+- Trained model weights are local-only artifacts
+- See [docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md) for the complete dataset inventory and acquisition instructions
+
+The primary intended dataset is **ForDigitStress** — request access at [hcai.eu/fordigitstress/](https://hcai.eu/fordigitstress/).
 
 ## Experimental Status
 
-### Current Experimental Status
-
 | Component | Status |
 |-----------|--------|
-| Model architecture | Available |
-| Five-modality runtime | Available |
-| Dynamic modality masking | Available |
-| Real-time dashboard | Available |
-| Webcam / face detection | Hardware tested |
-| Stress training dataset | Not bundled |
-| Legitimate stress checkpoint | Not available |
-| End-to-end stress validation | Pending |
+| Model architecture (RA-HMSD, 214K params) | ✅ Implemented |
+| Five-modality feature extractors | ✅ Implemented |
+| Dynamic modality masking | ✅ Implemented |
+| Reliability-aware attention fusion | ✅ Implemented |
+| Real-time dashboard (10 Hz) | ✅ Implemented |
+| Webcam / face / eye detection | ✅ Hardware tested |
+| Stress training dataset | ❌ Not bundled |
+| Legitimate stress checkpoint | ❌ Not available |
+| End-to-end stress validation | ❌ Pending dataset |
 
-**Note**: The system is fully engineered, physically tested, and verified for real-time temporal sequence generation. However, end-to-end stress prediction validation remains pending the acquisition of a legitimate training checkpoint.
+## Security & Data Policy
 
-## Performance
-*These are engineering runtime pipeline measurements, NOT scientific stress-detection accuracy.*
+This repository contains **only** source code, architecture definitions, preprocessing utilities, and documentation. It does **not** contain:
+- Private or restricted datasets
+- Downloaded dataset archives
+- Trained model weights or checkpoints
+- API keys, passwords, or credentials
+- Participant-level data
 
-Based on verified local benchmarks (via `scripts/evaluation/stability_test.py`):
-- **Model Forward Pass (P50):** ~9.90 ms
-- **Scheduler Update Interval (P50):** ~108.71 ms (~8.90 Hz)
-- **Local HTTP Overhead (P50):** ~7.63 ms
-- **Feature Extraction:** Completely decoupled (can take > 50ms without dropping the inference scheduler loop).
+Environment variables (if needed) should be configured via `.env` — see `.env.example`.
 
-## Limitations
-- **No Bundled Data**: There are no bundled private or restricted datasets included in this repository.
-- **Pending Training Checkpoint**: A fully-trained multimodal stress checkpoint is not currently available in the repository.
-- **Untrained Fallback**: Without a checkpoint, the live system operates strictly in `ARCHITECTURE TEST ONLY` mode.
-- **Unverified End-to-End Accuracy**: The end-to-end stress accuracy has not yet been independently reproduced.
-- **Hardware vs. Science**: Physical hardware camera validation establishes data ingestion reliability, but does not equal scientific model validation.
-- **Missing Modalities**: Some modalities (like eye tracking or pen pressure) may be unavailable depending on the real-world deployment environment (gracefully handled by the masking layer).
+## Detailed Documentation
 
-## Reproducibility
-All Python configurations, preprocessing scripts, model definitions, and pipeline orchestration files are provided to allow absolute reproducibility once the private datasets are locally acquired.
+For complete architecture details, dataset inventory, checkpoint audit, and step-by-step developer onboarding, see:
 
-## Future Work
-- Legitimate multimodal stress dataset acquisition and alignment.
-- Verified physical timestamp alignment across 5 separate sensor devices.
-- End-to-end stress training and hyperparameter tuning.
-- Subject-independent and cross-subject generalization evaluation.
-- Sensor calibration evaluation.
-- Ablation studies (feature vs. reliability-aware fusion).
-- Robustness validation under systematically missing modalities.
-- On-device and Edge deployment optimization.
+📄 **[docs/PROJECT_HANDOFF.md](docs/PROJECT_HANDOFF.md)**
 
 ## Citation
-*This implementation is an independent engineering reproduction.*
-If referencing the underlying theoretical research architecture:
 
-> Maike Stoeve, et al. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence." (Pending specific publication attribution details).
+*This is an independent engineering implementation of a multimodal stress detection architecture.*
 
-
-
-## Data, Models & Security
-
-This repository contains source code, model architecture definitions, preprocessing/training utilities, runtime components, and documentation.
-
-For security, licensing, privacy, and reproducibility reasons, the repository does not include:
-- private datasets
-- restricted research datasets
-- downloaded dataset archives
-- participant-level raw data
-- trained binary checkpoints
-- model weight files
-- local credentials
-- API keys
-- database passwords
-- private configuration files
-
-Users must obtain datasets separately from their official providers and comply with their licenses/EULAs. Environment variables should be used for API keys and credentials, for example:
-
-`env
-GEMINI_API_KEY=your_key_here
-`
+> Maike Stoeve, et al. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence."
