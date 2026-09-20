@@ -1,81 +1,153 @@
-# Environment and credentials
+# ============================================================
+# Environment and Credentials
+# ============================================================
 .env
 .env.*
 !.env.example
+credentials.json
+service-account.json
+secrets.json
+token.json
 
-# Virtual environments
-.venv/
-venv/
-node_modules/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-src/et_stress_classification.egg-info/
-
-# Data files — NEVER push datasets
+# ============================================================
+# Datasets — NEVER push data
+# ============================================================
 data/
-!data/README.md
+datasets/
+dataset/
+raw/
+processed/
 
-# Model/checkpoint binary files
-*.pkl
-*.h5
-*.hdf5
-*.keras
-*.pt
-*.pth
-*.onnx
-*.pb
-*.tflite
-*.bin
-*.safetensors
-*.joblib
-*.npy
-*.npz
-results/checkpoints/
-
-# Archives
-*.zip
-*.rar
-*.7z
-*.tar
-*.gz
-*.tar.gz
-
-# Dataset files
+# ============================================================
+# Data file types
+# ============================================================
 *.csv
-*.mat
+*.tsv
+*.xlsx
+*.xls
 *.parquet
 *.feather
+*.mat
+*.pkl
+*.pickle
+*.dat
+*.db
+*.sqlite
+
+# ============================================================
+# Audio / Video / Image data
+# ============================================================
 *.wav
 *.mp3
 *.flac
 *.mp4
 *.avi
 *.mov
-
-# Images (test/temporary)
+*.mkv
 *.jpg
 *.jpeg
 *.png
-!scripts/realtime/haarcascade_frontalface_default.xml
+*.bmp
+*.tif
+*.tiff
 
-# Profiling and logs
-profile.stats
+# ============================================================
+# Numerical arrays
+# ============================================================
+*.npy
+*.npz
+
+# ============================================================
+# Archives
+# ============================================================
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.gz
+
+# ============================================================
+# Model checkpoints and weights
+# ============================================================
+checkpoints/
+results/checkpoints/
+models/
+weights/
+saved_models/
+trained_models/
+
+*.keras
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pb
+*.tflite
+*.bin
+*.safetensors
+*.joblib
+
+# ============================================================
+# Logs and generated outputs
+# ============================================================
 *.log
-validation*.log
+profile.stats
+.system_generated/
+runs/
+outputs/
 
-# OS files
-.DS_Store
-Thumbs.db
+# ============================================================
+# Local experiment outputs (not project source)
+# ============================================================
+FINAL_ACCEPTANCE_REPORT.md
+FINAL_FIVE_MODALITY_LIVE_VERIFICATION.md
+FINAL_PROJECT_STATUS.md
+FINAL_TRAIN_ONCE_RUN_MANY_REPORT.md
+SYSTEM_HEALTH_CHECK.md
+installed_packages.txt
+task.md
+walkthrough.md
+implementation_plan.md
+docs_experiment_overview.md
+docs_local_test.md
+docs_test_matrix.md
+research_runtime_architecture.md
+results/FINAL_ACCEPTANCE_REPORT.md
+results/realtime_stability_report.md
+results/repository_cleanup_report.md
+results/dataset_research/
+results/source_data/
+results/swell_kw/
 
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+src/et_stress_classification.egg-info/
+
+# ============================================================
+# Virtual environments
+# ============================================================
+.venv/
+venv/
+node_modules/
+
+# ============================================================
 # IDE
-.idea/
+# ============================================================
 .vscode/
+.idea/
 *.swp
 *.swo
 
-# System generated
-.system_generated/
+# ============================================================
+# OS files
+# ============================================================
+.DS_Store
+Thumbs.db
