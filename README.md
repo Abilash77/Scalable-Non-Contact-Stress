@@ -75,5 +75,6 @@ This repository contains **only** source code, architecture definitions, preproc
 
 ## Citation
 
-*This is an independent engineering implementation of a multimodal stress detection architecture.*
-> Maike Stoeve, et al. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence."
+If you use this work, please cite:
+
+> Abilash Aruva. "Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence." (2026).
