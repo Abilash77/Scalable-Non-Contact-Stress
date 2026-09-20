@@ -16,11 +16,23 @@ secrets*
 # ============================================================
 # Datasets — Restricted/EULA-controlled raw data
 # ============================================================
-data/
-datasets/
-dataset/
-raw/
-processed/
+# Do NOT upload restricted datasets
+data/swell_kw/*
+!data/swell_kw/README.md
+data/raw/drivedb/*
+!data/raw/drivedb/README.md
+data/fer2013/*
+!data/fer2013/README.md
+
+# ============================================================
+# Archives
+# ============================================================
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.gz
 
 # ============================================================
 # Local Logs and Temporary Output

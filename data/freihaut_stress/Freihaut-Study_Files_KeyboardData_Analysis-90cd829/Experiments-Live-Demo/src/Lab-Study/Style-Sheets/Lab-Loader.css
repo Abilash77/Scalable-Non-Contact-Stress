@@ -1,0 +1,17 @@
+/*
+CSS file for the loading bar before the start of the tasks in the high-stress and low-stress condition
+*/
+
+.loader {
+    border: 9px solid #f3f3f3; /* Light grey */
+    border-top: 9px solid hsl(217, 71%, 53%); /* Link */
+    border-radius: 50%;
+    width: 65px;
+    height: 65px;
+    animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

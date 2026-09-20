@@ -1,0 +1,6 @@
+{
+    "train_samples": 1,
+    "val_samples": 1,
+    "feature_dim": 7,
+    "temporal_length": 10
+}
