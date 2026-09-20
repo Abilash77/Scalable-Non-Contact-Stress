@@ -118,16 +118,15 @@ def audio_worker(shared_state):
 def webcam_worker(shared_state):
     cap = None
     camera_idx = -1
-    # Force camera off for testing:
-    # for i in range(4):
-    #     temp_cap = cv2.VideoCapture(i)
-    #     if temp_cap.isOpened():
-    #         ret, _ = temp_cap.read()
-    #         if ret:
-    #             cap = temp_cap
-    #             camera_idx = i
-    #             break
-    #         temp_cap.release()
+    for i in range(5):
+        temp_cap = cv2.VideoCapture(i)
+        if temp_cap.isOpened():
+            ret, frame = temp_cap.read()
+            if ret and frame is not None and frame.size > 0:
+                cap = temp_cap
+                camera_idx = i
+                break
+            temp_cap.release()
             
     if cap is None:
         shared_state['camera_connected'] = False
