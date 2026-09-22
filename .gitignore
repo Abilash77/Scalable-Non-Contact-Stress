@@ -72,3 +72,19 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+
+# Local dataset downloads, model artifacts, and generated runtime files
+data/wesad/
+results/checkpoints/*.h5
+results/checkpoints/*.keras
+results/checkpoints/*.joblib
+results/checkpoints/legacy/
+results/realtime_session.log
+.sf/
+scratch/
+*.log
+
+scratch/CREDENTIALS_TRANSFER.txt
+scratch/CREDENTIALS_TRANSFER_INSTRUCTIONS.txt
+
+scratch/REAL_CREDENTIALS_TRANSFER.txt

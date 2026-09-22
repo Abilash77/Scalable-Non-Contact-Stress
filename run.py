@@ -3,21 +3,44 @@ import sys
 import time
 import multiprocessing
 import numpy as np
-import tensorflow as tf
 import cv2
 import queue
 import glob
 import base64
+import json
+import urllib.error
+import urllib.request
 
 from flask import Flask, jsonify, request, Response, render_template
 
+
+def _load_local_env():
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, 'r', encoding='utf-8') as env_file:
+            for line in env_file:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                name, value = line.split('=', 1)
+                os.environ.setdefault(name.strip(), value.strip().strip('"\''))
+    except OSError:
+        pass
+
+
+_load_local_env()
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-from DL_models import get_model
 from audio_utils import extract_audio_features
-from keystroke_utils import extract_keystroke_features
 from face_utils import extract_face_features
 from eye_utils import extract_eye_features
 from handwriting_utils import extract_handwriting_features
+from keyboard_stress_features import (
+    KEYSTROKES_PER_SUBWINDOW, NUM_TIMESTEPS, KeyboardStressPredictor,
+    browser_events_to_raw, compute_subwindow_features, events_to_pairs,
+)
 
 try:
     import pyaudio
@@ -29,131 +52,209 @@ try:
 except ImportError:
     keyboard = None
 
+import threading
+KEY_EVENTS_LOCK = threading.Lock()
+
+
 def keyboard_worker(shared_state):
-    if keyboard is None:
-        shared_state['keyboard_status'] = "HARDWARE_UNAVAILABLE"
-        return
-        
-    shared_state['keyboard_status'] = "ACTIVE"
-    events = []
-    total_event_count = 0
-    
-    def on_press(key):
-        nonlocal total_event_count
-        events.append({'key': str(key), 'action': 'press', 'time': time.time()})
-        total_event_count += 1
-    def on_release(key):
-        nonlocal total_event_count
-        events.append({'key': str(key), 'action': 'release', 'time': time.time()})
-        total_event_count += 1
-        
-    try:
-        listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        listener.start()
-    except Exception as e:
-        shared_state['keyboard_status'] = f"ERROR: {e}"
-        return
-    
+    """
+    Real browser key events -> keystroke pairs -> 4-keystroke sub-windows -> 7D
+    features (identical code path to the Freihaut training data). Each complete
+    sub-window is appended to `keyboard_window` (last 10 = one model sample).
+    """
+    import json
+    shared_state['keyboard_status'] = "WAITING_FOR_INPUT"
+    raw_events = []            # dataset-format KeyDown/KeyUp events (ms)
+    seen_event_ids = set()
+    consumed_down = None       # down_time of the last keystroke already turned into a sub-window
+    pending = []               # completed keystrokes not yet in a sub-window
+    total_press_count = 0
+    session_marker = None
+
     while shared_state['running']:
-        time.sleep(0.1)
+        time.sleep(0.05)
         if not shared_state.get('is_live_monitoring', False):
+            shared_state['keyboard_status'] = "WAITING_FOR_INPUT"
             continue
-            
-        current_time = time.time()
-        recent_events = [e for e in events if current_time - e['time'] < 10.0]
-        events[:] = recent_events
-        
+
+        marker = shared_state.get('keyboard_session_marker')
+        if marker != session_marker:  # new session / reset -> drop old typing
+            session_marker = marker
+            raw_events, pending, consumed_down = [], [], None
+            seen_event_ids.clear()
+            total_press_count = 0
+
+        with KEY_EVENTS_LOCK:
+            remote_events_json = shared_state.get('remote_keystroke_events')
+            shared_state['remote_keystroke_events'] = None
+        if not remote_events_json:
+            continue
+        try:
+            new_events = [e for e in json.loads(remote_events_json)
+                          if e.get('event_id') is not None and e['event_id'] not in seen_event_ids]
+        except Exception:
+            continue
+        for e in new_events:
+            seen_event_ids.add(e['event_id'])
+            if e.get('action') == 'press' and not e.get('repeat'):
+                total_press_count += 1
+        if not new_events:
+            continue
+
         t0 = time.perf_counter()
-        feats = extract_keystroke_features(recent_events)
+        raw_events.extend(browser_events_to_raw(new_events))
+        raw_events.sort(key=lambda ev: ev['time'])
+        raw_events = raw_events[-600:]
+        pairs = events_to_pairs(raw_events)
+        # Only the newest keystroke still being held can be incomplete; everything
+        # older is final, so hold back pairs whose KeyUp may still be reordered.
+        fresh = [p for p in pairs if consumed_down is None or p['down_time'] > consumed_down]
+        pending = fresh
+        new_vectors = []
+        while len(pending) >= KEYSTROKES_PER_SUBWINDOW:
+            chunk, pending = pending[:KEYSTROKES_PER_SUBWINDOW], pending[KEYSTROKES_PER_SUBWINDOW:]
+            consumed_down = chunk[-1]['down_time']
+            feats = compute_subwindow_features(chunk)
+            if feats is not None:  # same rule as training: unusable sub-windows are skipped
+                new_vectors.append(feats.tolist())
         lat = (time.perf_counter() - t0) * 1000
-        
-        shared_state['keystroke_features'] = feats.tolist()
-        shared_state['keyboard_event_count'] = total_event_count
-        latencies = shared_state['latency']
-        latencies['keystroke'] = lat
+
+        shared_state['keyboard_event_count'] = total_press_count
+        shared_state['keyboard_pending_keystrokes'] = len(pending)
+        shared_state['keyboard_status'] = "RECEIVING"
+        if not new_vectors:
+            continue
+
+        window = list(shared_state.get('keyboard_window') or [])
+        window = (window + new_vectors)[-NUM_TIMESTEPS:]
+        shared_state['keyboard_window'] = window
+        shared_state['keystroke_features'] = new_vectors[-1]
+        shared_state['keystroke_features_display'] = [round(v, 3) for v in new_vectors[-1]]
+        shared_state['keyboard_sample_id'] = shared_state.get('keyboard_sample_id', 0) + len(new_vectors)
+        shared_state['keyboard_last_sample_time'] = time.time()
+        shared_state['keyboard_sample_count'] = len(window)
+        shared_state['latency']['keystroke'] = lat
 
 def audio_worker(shared_state):
-    if pyaudio is None:
-        shared_state['mic_status'] = "HARDWARE_UNAVAILABLE"
-        return
-        
-    CHUNK = 1024
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
+    shared_state['mic_status'] = "WAITING_FOR_MIC"
     RATE = 16000
-    RECORD_SECONDS = 3
-    
-    p = pyaudio.PyAudio()
+    sample_id = 0
+    session_marker = None
+    # Warm up librosa/numba once at startup so the first real microphone chunk
+    # is not delayed by JIT compilation.
     try:
-        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
-        shared_state['mic_status'] = "ACTIVE"
+        extract_audio_features(audio_segment=(0.01 * np.random.RandomState(0).randn(RATE)).astype(np.float32), sr=RATE)
     except Exception as e:
-        shared_state['mic_status'] = f"HARDWARE_UNAVAILABLE"
-        return
-    
-    sample_count = 0
+        print(f"Audio warm-up failed: {e}")
+
     while shared_state['running']:
-        time.sleep(0.1)
+        time.sleep(0.5)  # Poll twice a second
+        marker = shared_state.get('keyboard_session_marker')
+        if marker != session_marker:
+            session_marker = marker
+            sample_id = 0
+            shared_state['audio_features'] = None
+            shared_state['audio_sample_id'] = 0
+            shared_state['audio_sample_count'] = 0
         if not shared_state.get('is_live_monitoring', False):
+            shared_state['mic_status'] = "WAITING_FOR_MIC"
             continue
             
-        frames = []
-        for _ in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+        b64_audio = shared_state.get('remote_audio_b64')
+        if b64_audio:
             try:
-                frames.append(stream.read(CHUNK, exception_on_overflow=False))
-            except Exception:
-                pass
-        audio_data = np.frombuffer(b''.join(frames), dtype=np.int16).astype(np.float32)
-        sample_count += len(audio_data)
-        
-        t0 = time.perf_counter()
-        feats = extract_audio_features(audio_segment=audio_data, sr=RATE)
-        lat = (time.perf_counter() - t0) * 1000
-        
-        shared_state['audio_features'] = feats.tolist()
-        shared_state['audio_sample_count'] = sample_count
-        latencies = shared_state['latency']
-        latencies['audio'] = lat
+                import base64
+                audio_bytes = base64.b64decode(b64_audio)
+                audio_data = np.frombuffer(audio_bytes, dtype=np.float32)
+                if audio_data.size == 0 or float(np.sqrt(np.mean(audio_data ** 2))) <= 1e-5:
+                    shared_state['audio_features'] = None
+                    continue
+                
+                t0 = time.perf_counter()
+                feats = extract_audio_features(audio_segment=audio_data, sr=RATE)
+                lat = (time.perf_counter() - t0) * 1000
+                if np.count_nonzero(feats) == 0:
+                    shared_state['audio_features'] = None
+                    continue
+
+                sample_id += 1
+                shared_state['audio_features'] = feats.tolist()
+                shared_state['audio_features_summary'] = {
+                    'mfcc_1_4': [round(float(v), 2) for v in feats[:4]],
+                    'rms_dbfs': round(float(20 * np.log10(np.sqrt(np.mean(audio_data ** 2)) + 1e-9)), 1),
+                    'seconds': round(audio_data.size / RATE, 2),
+                }
+                shared_state['audio_sample_id'] = sample_id
+                shared_state['audio_last_sample_time'] = time.time()
+                shared_state['audio_sample_count'] = sample_id
+                shared_state['mic_status'] = "RECEIVING_AUDIO"
+                latencies = shared_state['latency']
+                latencies['audio'] = lat
+            except Exception as e:
+                print(f"Audio processing error: {e}")
+            finally:
+                shared_state['remote_audio_b64'] = None
+
 
 def webcam_worker(shared_state):
-    cap = None
-    camera_idx = -1
-    for i in range(5):
-        temp_cap = cv2.VideoCapture(i)
-        if temp_cap.isOpened():
-            ret, frame = temp_cap.read()
-            if ret and frame is not None and frame.size > 0:
-                cap = temp_cap
-                camera_idx = i
-                break
-            temp_cap.release()
-            
-    if cap is None:
-        shared_state['camera_connected'] = False
-        shared_state['face_status'] = "HARDWARE_UNAVAILABLE"
-        shared_state['eye_status'] = "HARDWARE_UNAVAILABLE"
-        return
-        
-    shared_state['camera_connected'] = True
-    shared_state['camera_index'] = camera_idx
+    shared_state['camera_connected'] = False
+    shared_state['face_status'] = "WAITING_FOR_CAMERA"
+    shared_state['eye_status'] = "WAITING_FOR_CAMERA"
     
     frame_count = 0
     face_detection_count = 0
     eye_detection_count = 0
     fps_start_time = time.time()
+    session_marker = None
     
+    fer_model = None
+    fer_classes = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
     try:
-        while shared_state['running']:
-            if not shared_state.get('is_live_monitoring', False):
-                time.sleep(0.1)
-                continue
+        from tensorflow.keras.models import load_model
+        import os
+        model_path = os.path.join('results', 'checkpoints', 'fer2013_facial_emotion.keras')
+        if os.path.exists(model_path):
+            fer_model = load_model(model_path)
+            shared_state['face_model_loaded'] = True
+            print("[MODEL] FER-2013 Facial Emotion Model Loaded in Webcam Worker")
+    except Exception as e:
+        print(f"FER model load error: {e}")
+    
+    while shared_state['running']:
+        time.sleep(0.1)
+        marker = shared_state.get('keyboard_session_marker')
+        if marker != session_marker:
+            session_marker = marker
+            frame_count = 0
+            face_detection_count = 0
+            eye_detection_count = 0
+            shared_state['face_features'] = None
+            shared_state['eye_features'] = None
+            shared_state['camera_frame_count'] = 0
+            shared_state['face_detection_count'] = 0
+            shared_state['eye_detection_count'] = 0
+            shared_state['face_sample_id'] = 0
+            shared_state['eye_sample_id'] = 0
+        if not shared_state.get('is_live_monitoring', False):
+            shared_state['camera_connected'] = False
+            shared_state['face_status'] = "WAITING_FOR_CAMERA"
+            shared_state['eye_status'] = "WAITING_FOR_CAMERA"
+            continue
 
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.033)
+        b64_frame = shared_state.get('remote_frame_b64')
+        if not b64_frame:
+            continue
+            
+        try:
+            import base64
+            img_data = base64.b64decode(b64_frame.split(',')[1] if ',' in b64_frame else b64_frame)
+            nparr = np.frombuffer(img_data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
                 continue
-
+                
             frame_timestamp = time.time()
+            shared_state['camera_connected'] = True
             shared_state['last_frame_timestamp'] = frame_timestamp
             h_orig, w_orig = frame.shape[:2]
             shared_state['camera_width'] = w_orig
@@ -168,12 +269,6 @@ def webcam_worker(shared_state):
                 shared_state['camera_fps'] = round(fps, 1)
                 fps_start_time = now
 
-            if frame_count % 3 != 0:
-                ret_enc, buffer = cv2.imencode('.jpg', frame)
-                if ret_enc:
-                    shared_state['latest_frame_jpg'] = buffer.tobytes()
-                continue
-
             frame_small = cv2.resize(frame, (320, 240))
 
             t0 = time.perf_counter()
@@ -187,6 +282,8 @@ def webcam_worker(shared_state):
             if face_status == "DETECTED":
                 face_detection_count += 1
                 shared_state['face_last_valid_time'] = time.time()
+                shared_state['face_sample_id'] = face_detection_count
+                shared_state['face_last_sample_time'] = shared_state['face_last_valid_time']
 
                 bbox = face_meta.get('bbox', [0, 0, 0, 0])
                 scale_x = w_orig / 320.0
@@ -201,6 +298,20 @@ def webcam_worker(shared_state):
                 cv2.putText(frame, "FACE DETECTED", (x, y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(frame, f"Faces: {face_meta.get('count', 1)}", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
+                if fer_model is not None:
+                    # face_meta.get('bbox') is based on frame_small (320x240)
+                    bx, by, bw, bh = bbox
+                    face_crop = frame_small[max(0, by):min(240, by+bh), max(0, bx):min(320, bx+bw)]
+                    if face_crop.shape[0] > 0 and face_crop.shape[1] > 0:
+                        face_resized = cv2.resize(face_crop, (48, 48))
+                        face_input = np.expand_dims(face_resized, axis=0)
+                        preds = fer_model(face_input, training=False).numpy()[0]
+                        probs = {fer_classes[i]: float(preds[i]) for i in range(len(fer_classes))}
+                        top_emotion = fer_classes[np.argmax(preds)].upper()
+                        shared_state['face_emotion_probs'] = probs
+                        shared_state['face_emotion_label'] = top_emotion
+                        shared_state['face_fer_inference_count'] = shared_state.get('face_fer_inference_count', 0) + 1
+
                 shared_state['face_bbox'] = [x, y, w, h]
                 shared_state['face_count'] = face_meta.get('count', 1)
                 shared_state['face_confidence'] = face_meta.get('confidence', 'N/A')
@@ -214,28 +325,41 @@ def webcam_worker(shared_state):
             if eye_status == "DETECTED":
                 eye_detection_count += 1
                 shared_state['eye_last_valid_time'] = time.time()
+                shared_state['eye_sample_id'] = eye_detection_count
+                shared_state['eye_last_sample_time'] = shared_state['eye_last_valid_time']
 
             ret_enc, buffer = cv2.imencode('.jpg', frame)
             if ret_enc:
                 shared_state['latest_frame_jpg'] = buffer.tobytes()
 
-            shared_state['face_features'] = face_feats.tolist()
-            shared_state['eye_features'] = eye_feats.tolist()
+            shared_state['face_features'] = face_feats.tolist() if face_status == "DETECTED" else None
+            shared_state['eye_features'] = eye_feats.tolist() if eye_status == "DETECTED" else None
+            shared_state['face_features_display'] = [round(float(v), 3) for v in face_feats] if face_status == "DETECTED" else None
+            shared_state['eye_features_display'] = [round(float(v), 3) for v in eye_feats] if eye_status == "DETECTED" else None
             shared_state['face_detection_count'] = face_detection_count
             shared_state['eye_detection_count'] = eye_detection_count
 
             latencies = shared_state['latency']
             latencies['face'] = lat
             latencies['eye'] = lat
-    finally:
-        if cap is not None:
-            cap.release()
+        except Exception as e:
+            print(f"Webcam processing error: {e}")
+        finally:
+            shared_state['remote_frame_b64'] = None
 
 def handwriting_worker(shared_state):
     shared_state['handwriting_status'] = "WAITING_FOR_INPUT"
-    submission_count = 0
+    sample_id = 0
+    session_marker = None
     while shared_state['running']:
         time.sleep(0.1)
+        marker = shared_state.get('keyboard_session_marker')
+        if marker != session_marker:
+            session_marker = marker
+            sample_id = 0
+            shared_state['handwriting_features'] = None
+            shared_state['handwriting_sample_id'] = 0
+            shared_state['handwriting_submission_count'] = 0
         if not shared_state.get('is_live_monitoring', False):
             continue
             
@@ -247,12 +371,29 @@ def handwriting_worker(shared_state):
                 nparr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
                 
-                feats = extract_handwriting_features(img_array=img)
-                submission_count += 1
-                shared_state['handwriting_status'] = "ACTIVE"
+                strokes = None
+                strokes_json = shared_state.get('live_handwriting_strokes')
+                if strokes_json:
+                    import json as _json
+                    try:
+                        strokes = _json.loads(strokes_json)
+                    except Exception:
+                        strokes = None
+                feats = extract_handwriting_features(img_array=img, strokes=strokes)
+                if np.count_nonzero(feats[:7]) == 0:  # blank canvas
+                    shared_state['handwriting_status'] = "WAITING_FOR_INPUT"
+                    shared_state['live_handwriting_b64'] = None
+                    shared_state['live_handwriting_strokes'] = None
+                    continue
+
+                sample_id += 1
+                shared_state['handwriting_status'] = "RECEIVING"
                 shared_state['handwriting_features'] = feats.tolist()
-                shared_state['handwriting_submission_count'] = submission_count
-                shared_state['handwriting_last_valid_time'] = time.time()
+                shared_state['handwriting_features_display'] = [round(float(v), 3) for v in feats]
+                shared_state['handwriting_sample_id'] = sample_id
+                shared_state['handwriting_submission_count'] = sample_id
+                shared_state['handwriting_last_sample_time'] = time.time()
+                shared_state['handwriting_last_valid_time'] = shared_state['handwriting_last_sample_time']
             except Exception as e:
                 shared_state['handwriting_status'] = f"ERROR: {e}"
                 
@@ -261,409 +402,300 @@ def handwriting_worker(shared_state):
             latencies['handwriting'] = lat
             
             shared_state['live_handwriting_b64'] = None
+            shared_state['live_handwriting_strokes'] = None
+
+FEATURE_ONLY_BUFFERS = {'audio': 169, 'face': 12, 'handwriting': 9, 'eye': 5}
+
+
+def load_keyboard_predictor(shared_state):
+    """Load the validated keyboard stress model once. No retraining, no fallback."""
+    import json as _json
+    meta_path = os.path.join('results', 'checkpoints', 'keyboard_stress_model_metadata.json')
+    t0 = time.perf_counter()
+    try:
+        predictor = KeyboardStressPredictor(meta_path)
+        # Real forward pass on a real-shaped input to fail fast on incompatible files.
+        predictor.predict_proba(np.zeros((1, NUM_TIMESTEPS, 7), dtype=np.float32))
+    except Exception as exc:
+        print("\n" + "=" * 50)
+        print("MODEL STATUS: NO VALID KEYBOARD STRESS MODEL")
+        print(f"REASON: {exc}")
+        print("ACTION: python scripts/preprocess_freihaut.py && python train.py --retrain")
+        print("=" * 50 + "\n")
+        shared_state['model_status'] = 'READY FOR TRAINING'
+        shared_state['dataset_name'] = 'FREIHAUT & GOERITZ KEYBOARD STRESS'
+        shared_state['trained_modalities'] = _json.dumps([])
+        shared_state['model_load_time_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+        return None
+
+    meta = predictor.meta
+    shared_state['model_status'] = 'TRAINED'
+    shared_state['checkpoint_name'] = meta['model_file']
+    shared_state['model_name'] = meta.get('model_name', '')
+    shared_state['dataset_name'] = meta.get('dataset_name', 'Freihaut & Goeritz (2021)')
+    shared_state['trained_modalities'] = _json.dumps(['keyboard'])
+    shared_state['decision_threshold'] = predictor.threshold
+    shared_state['model_test_metrics'] = _json.dumps({
+        k: round(v, 4) for k, v in meta.get('test_metrics', {}).items() if isinstance(v, float)})
+    shared_state['model_load_time_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+    print(f"[MODEL] Keyboard stress model loaded: {meta['model_file']} ({meta.get('model_name')})")
+    print(f"[MODEL] Dataset: {shared_state['dataset_name']} | trained {meta.get('training_timestamp')}")
+    print(f"[MODEL] Test balanced accuracy {meta['test_metrics']['balanced_accuracy']:.3f}, "
+          f"ROC-AUC {meta['test_metrics']['roc_auc']:.3f} | threshold {predictor.threshold:.3f}")
+    print("[MODEL] Face / eye / speech / handwriting: FEATURE EXTRACTION ONLY (no stress-trained model)")
+    return predictor
+
 
 def inference_worker(shared_state):
     import datetime
     import json as _json
-    tf.config.set_visible_devices([], 'GPU')
-    
-    cp_dir = 'results/checkpoints'
-    cp_swell = os.path.join(cp_dir, 'swell_kw_best.keras')
-    cp_orig = os.path.join(cp_dir, 'stress_model.keras')
-    meta_path = os.path.join(cp_dir, 'training_metadata.json')
-    
-    cp_file = None
-    model_name = 'fusion'
-    num_mods = 5
-    feature_dim = 9
-    is_trained = False
-    
-    # Validation
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, 'r') as f:
-                meta = _json.load(f)
-            
-            cp_freihaut = os.path.join(cp_dir, 'freihaut_keyboard_stress.keras')
-            if meta.get("is_trained") and not meta.get("is_prototype", False) and os.path.exists(cp_freihaut):
-                expected_arch = meta.get("model_architecture")
-                if expected_arch == "fusion":
-                    cp_file = cp_freihaut
-                    model_name = "fusion"
-                    num_mods = 5
-                    is_trained = True
-                    shared_state['trained_modalities'] = _json.dumps(meta.get('trained_modalities', []))
-            else:
-                is_trained = False
-        except Exception as e:
-            print(f"Metadata validation error: {e}")
-            is_trained = False
-            
-    if not is_trained:
-        print("\n" + "="*50)
-        print("MODEL STATUS: READY FOR TRAINING")
-        print("DATA STATUS: FREIHAUT & GÖRITZ KEYBOARD STRESS")
-        print("MODE: ARCHITECTURE TEST ONLY")
-        print("MESSAGE: \"No valid trained stress model found. Run `python train.py` after preprocessing Freihaut data.\"")
-        print("="*50 + "\n")
-        shared_state['model_status'] = "READY FOR TRAINING"
-        shared_state['dataset_name'] = "FREIHAUT & GÖRITZ KEYBOARD STRESS"
-    else:
-        shared_state['dataset_name'] = meta.get("dataset_name", "UNKNOWN")
-        print(f"\n[MODEL] Valid trained checkpoint found")
-        print(f"[MODEL] Dataset: {shared_state['dataset_name']}")
-        print(f"[MODEL] Training date: {meta.get('training_timestamp', 'UNKNOWN')}")
-        print(f"[MODEL] Loading checkpoint...")
-    
-    input_shapes = {
-        'audio': (10, 169),
-        'face': (10, 12),
-        'keystroke': (10, 7),
-        'handwriting': (10, 9),
-        'eye': (10, 5)
-    }
 
-    # Measure model load time
-    t_load_start = time.perf_counter()
-    model = get_model(model_name, input_shapes=input_shapes, num_classes=2)
-    
-    if is_trained and cp_file:
-        try:
-            model.load_weights(cp_file)
-            shared_state['model_status'] = "TRAINED"
-            shared_state['checkpoint_name'] = os.path.basename(cp_file)
-            print(f"[MODEL] Checkpoint loaded successfully")
-            print(f"[MODEL] Training skipped — existing valid model")
-            print(f"[MODEL] Real-time inference starting...")
-        except Exception as e:
-            print(f"Failed to load trained weights: {e}")
-            shared_state['model_status'] = "READY FOR TRAINING"
-            shared_state['dataset_name'] = "FREIHAUT & GÖRITZ KEYBOARD STRESS"
-            is_trained = False
-            
-    t_load_end = time.perf_counter()
-    shared_state['model_load_time_ms'] = round((t_load_end - t_load_start) * 1000, 1)
-    
-    # Warmup
-    print("[INFO] Warming up model...")
-    dummy_inputs = {k: tf.zeros((1, *v)) for k, v in input_shapes.items()}
-    dummy_inputs['input_mask'] = tf.zeros((1, num_mods))
-    # Correct names for model inputs:
-    dummy_inputs = {
-        'input_audio': dummy_inputs['audio'],
-        'input_face': dummy_inputs['face'],
-        'input_keystroke': dummy_inputs['keystroke'],
-        'input_handwriting': dummy_inputs['handwriting'],
-        'input_eye': dummy_inputs['eye'],
-        'input_mask': dummy_inputs['input_mask']
-    }
-    model(dummy_inputs, training=False)
-    print("[INFO] Model warmup complete.")
-            
-    @tf.function(reduce_retracing=True)
-    def fast_inference(inputs):
-        return model(inputs, training=False)
-    
-    T = 10
-    buffers = {
-        'audio': np.zeros((T, 169), dtype=np.float32),
-        'face': np.zeros((T, 12), dtype=np.float32),
-        'keystroke': np.zeros((T, 7), dtype=np.float32),
-        'handwriting': np.zeros((T, 9), dtype=np.float32),
-        'eye': np.zeros((T, 5), dtype=np.float32)
-    }
-    
-    # Per-modality buffer fill counts (how many REAL non-zero vectors have been pushed)
+    predictor = load_keyboard_predictor(shared_state)
+    is_trained = predictor is not None
+
+    T = NUM_TIMESTEPS
+    buffers = {m: np.zeros((T, d), dtype=np.float32) for m, d in FEATURE_ONLY_BUFFERS.items()}
     buffer_fills = {'audio': 0, 'face': 0, 'keystroke': 0, 'handwriting': 0, 'eye': 0}
-    
-    # Sticky availability — track last time each modality produced valid (non-zero) features
-    AVAILABILITY_TIMEOUT = 10.0  # seconds before declaring a modality unavailable
+    AVAILABILITY_TIMEOUT = 10.0
     last_valid_time = {'audio': 0.0, 'face': 0.0, 'keystroke': 0.0, 'handwriting': 0.0, 'eye': 0.0}
-    
-    # Temporal smoothing state — Exponential Moving Average (EMA)
-    # NOTE: This is an engineering convenience for display stability,
-    # NOT a component of the original paper's architecture.
-    SMOOTHING_ALPHA = 0.3  # weight for the newest observation
-    smoothed_stress_prob = 0.0
-    
-    # Prediction history ring buffer (last 20 windows)
+    last_sample_ids = {'audio': 0, 'face': 0, 'keystroke': 0, 'handwriting': 0, 'eye': 0}
     MAX_HISTORY = 20
     prediction_history = []
-
-    # Rolling latency samples for percentile reporting (last 100 cycles)
     LATENCY_WINDOW = 100
-    feat_lat_samples = []
-    inf_lat_samples = []
-    total_lat_samples = []
-    cycle_timestamps = []
-    
+    feat_lat_samples, inf_lat_samples, total_lat_samples, cycle_timestamps = [], [], [], []
+    session_marker = None
+    last_pred_latency = 0.0
+
     os.makedirs('results', exist_ok=True)
     log_file_path = 'results/realtime_session.log'
-    
+    mod_order = ['audio', 'face', 'keystroke', 'handwriting', 'eye']  # mask order
+
+    def _percentiles(samples):
+        if not samples:
+            return {'p50': 0.0, 'p95': 0.0, 'max': 0.0}
+        ordered = sorted(samples)
+        n = len(ordered)
+        return {'p50': round(ordered[n // 2], 1), 'p95': round(ordered[min(n - 1, int(n * 0.95))], 1),
+                'max': round(ordered[-1], 1)}
+
+    def _clear_prediction():
+        shared_state['predictions_available'] = False
+        shared_state['fusion_prob'] = None
+        shared_state['fusion_pred'] = -1
+        shared_state['raw_stress_prob'] = None
+        shared_state['raw_nonstress_prob'] = None
+        shared_state['smoothed_stress_prob'] = None
+        shared_state['smoothed_nonstress_prob'] = None
+        shared_state['confidence'] = None
+
+    _clear_prediction()
+
     while shared_state['running']:
         time.sleep(0.1)
         if not shared_state.get('is_live_monitoring', False):
             continue
-            
+
+        marker = shared_state.get('keyboard_session_marker')
+        if marker != session_marker:  # new session / reset: clear buffers and stale prediction
+            session_marker = marker
+            for m in buffers:
+                buffers[m][:] = 0
+            buffer_fills = {k: 0 for k in buffer_fills}
+            last_valid_time = {k: 0.0 for k in last_valid_time}
+            last_sample_ids = {k: 0 for k in last_sample_ids}
+            prediction_history = []
+            _clear_prediction()
+            shared_state['unique_samples'] = {k: 0 for k in mod_order}
+            shared_state['inference_counts'] = {k: 0 for k in mod_order}
+            shared_state['prediction_history'] = '[]'
+
         t_start = time.perf_counter()
         now = time.time()
-        
         shared_state['total_cycles'] += 1
-        ui_mask = np.zeros(5, dtype=np.float32)
-        
-        aud_f = shared_state.get('audio_features')
-        fac_f = shared_state.get('face_features')
-        key_f = shared_state.get('keystroke_features')
-        hw_f = shared_state.get('handwriting_features')
-        eye_f = shared_state.get('eye_features')
-        
-        # --- Audio / Speech (mask index 0) ---
-        if aud_f is not None:
-            arr = np.array(aud_f)
-            buffers['audio'] = np.roll(buffers['audio'], -1, axis=0)
-            buffers['audio'][-1] = arr
-            if np.count_nonzero(arr) > 0:
-                last_valid_time['audio'] = now
-                buffer_fills['audio'] = min(buffer_fills['audio'] + 1, T)
-        if (now - last_valid_time['audio']) < AVAILABILITY_TIMEOUT and last_valid_time['audio'] > 0:
-            ui_mask[0] = 1.0
-        
-        # --- Facial (mask index 1) ---
-        if fac_f is not None:
-            arr = np.array(fac_f)
-            buffers['face'] = np.roll(buffers['face'], -1, axis=0)
-            buffers['face'][-1] = arr
-            if np.count_nonzero(arr) > 0:
-                last_valid_time['face'] = now
-                buffer_fills['face'] = min(buffer_fills['face'] + 1, T)
-        if (now - last_valid_time['face']) < AVAILABILITY_TIMEOUT and last_valid_time['face'] > 0:
-            ui_mask[1] = 1.0
-        
-        # --- Keyboard (mask index 2) ---
-        # Keyboard is special: zero features from idle typing are legitimate data.
-        # Available whenever the keyboard worker is alive and has provided features.
-        if key_f is not None:
-            arr = np.array(key_f)
-            buffers['keystroke'] = np.roll(buffers['keystroke'], -1, axis=0)
-            buffers['keystroke'][-1] = arr
-            buffer_fills['keystroke'] = min(buffer_fills['keystroke'] + 1, T)
-            last_valid_time['keystroke'] = now  # Always valid when worker is alive
-        kbd_status = shared_state.get('keyboard_status', '')
-        if kbd_status == 'ACTIVE' and key_f is not None:
-            ui_mask[2] = 1.0
-        
-        # --- Handwriting (mask index 3) ---
-        if shared_state.get('handwriting_clear_flag', False):
-            buffers['handwriting'] = np.zeros((T, 9), dtype=np.float32)
-            buffer_fills['handwriting'] = 0
-            last_valid_time['handwriting'] = 0
-            shared_state['handwriting_clear_flag'] = False
-            shared_state['handwriting_features'] = None
-            hw_f = None
+        runtime_mask = np.zeros(5, dtype=np.float32)
+        us = dict(shared_state.get('unique_samples') or {k: 0 for k in mod_order})
+        ic = dict(shared_state.get('inference_counts') or {k: 0 for k in mod_order})
 
-        if hw_f is not None:
-            arr = np.array(hw_f)
-            # The architecture intentionally uses the static handwriting feature over the entire 10-step window
-            buffers['handwriting'][:] = arr
-            if np.count_nonzero(arr) > 0:
-                last_valid_time['handwriting'] = now
-                buffer_fills['handwriting'] = T
-            shared_state['handwriting_features'] = None # consume it so we don't process it repeatedly
-            
-        if (now - last_valid_time['handwriting']) < AVAILABILITY_TIMEOUT and last_valid_time['handwriting'] > 0:
-            ui_mask[3] = 1.0
-        
-        # --- Eye/Pupil (mask index 4) ---
-        if eye_f is not None:
-            arr = np.array(eye_f)
-            buffers['eye'] = np.roll(buffers['eye'], -1, axis=0)
-            buffers['eye'][-1] = arr
-            if np.count_nonzero(arr) > 0:
-                last_valid_time['eye'] = now
-                buffer_fills['eye'] = min(buffer_fills['eye'] + 1, T)
-        if (now - last_valid_time['eye']) < AVAILABILITY_TIMEOUT and last_valid_time['eye'] > 0:
-            ui_mask[4] = 1.0
-            
-        # Enforce trained modalities mask
-        trained_modalities_str = shared_state.get('trained_modalities', '[]')
-        import json as _json
-        try:
-            trained_mods = _json.loads(trained_modalities_str)
-        except Exception:
-            trained_mods = []
-            
-        trained_modalities_mapping = {
-            0: ['audio', 'speech'],
-            1: ['face', 'facial'],
-            2: ['keystroke', 'keyboard'],
-            3: ['handwriting'],
-            4: ['eye', 'eye_pupil']
-        }
-        
-        for i in range(5):
-            if ui_mask[i] > 0.5:
-                is_trained_mod = any(m in trained_mods for m in trained_modalities_mapping[i])
-                if not is_trained_mod:
-                    ui_mask[i] = 0.0
-            
-        inputs = {
-            'input_audio': tf.convert_to_tensor(np.expand_dims(buffers['audio'], axis=0), dtype=tf.float32),
-            'input_face': tf.convert_to_tensor(np.expand_dims(buffers['face'], axis=0), dtype=tf.float32),
-            'input_keystroke': tf.convert_to_tensor(np.expand_dims(buffers['keystroke'], axis=0), dtype=tf.float32),
-            'input_handwriting': tf.convert_to_tensor(np.expand_dims(buffers['handwriting'], axis=0), dtype=tf.float32),
-            'input_eye': tf.convert_to_tensor(np.expand_dims(buffers['eye'], axis=0), dtype=tf.float32),
-            'input_mask': tf.convert_to_tensor(np.expand_dims(ui_mask, axis=0), dtype=tf.float32)
-        }
-        
-        try:
-            preds = fast_inference(inputs)
-            
-            raw_stress_prob = float(preds['fusion_output'].numpy()[0][1])
-            raw_nonstress_prob = float(preds['fusion_output'].numpy()[0][0])
-            reliabilities = preds['reliabilities'].numpy()[0].tolist()
-            alphas = preds['alphas'].numpy()[0].tolist()
-            shared_state['successful_cycles'] += 1
-        except Exception as e:
-            shared_state['failed_cycles'] += 1
-            print(f"Inference error: {e}")
-            continue
-        
-        t_end = time.perf_counter()
-        lat_fusion = (t_end - t_start) * 1000
-        
-        # Temporal smoothing (EMA)
-        smoothed_stress_prob = SMOOTHING_ALPHA * raw_stress_prob + (1.0 - SMOOTHING_ALPHA) * smoothed_stress_prob
-        smoothed_nonstress_prob = 1.0 - smoothed_stress_prob
-        
-        pred_label = 1 if smoothed_stress_prob > 0.5 else 0
-        confidence = smoothed_stress_prob if pred_label == 1 else smoothed_nonstress_prob
-        
-        now_ts = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        # Build modality weights dict (order: audio/speech, face/facial, keystroke/keyboard, handwriting, eye/pupil)
-        modality_weights = {
-            'keyboard': round(alphas[2], 4),
-            'speech': round(alphas[0], 4),
-            'facial': round(alphas[1], 4),
-            'eye_pupil': round(alphas[4], 4),
-            'handwriting': round(alphas[3], 4)
-        }
-        
-        # Determine unavailable modalities from mask
-        unavailable = []
-        mask_to_name = {0: 'speech', 1: 'facial', 2: 'keyboard', 3: 'handwriting', 4: 'eye_pupil'}
-        for idx, name in mask_to_name.items():
-            if ui_mask[idx] < 0.5:
-                unavailable.append(name)
-        
-        # Build prediction history entry (architecture debug when untrained)
-        if is_trained:
-            history_entry = {
+        # ---- feature-only modalities: consume new real samples -------------
+        sources = {'audio': ('audio_features', 'audio_sample_id'),
+                   'face': ('face_features', 'face_sample_id'),
+                   'handwriting': ('handwriting_features', 'handwriting_sample_id'),
+                   'eye': ('eye_features', 'eye_sample_id')}
+        if shared_state.get('handwriting_clear_flag', False):
+            buffers['handwriting'][:] = 0
+            buffer_fills['handwriting'] = 0
+            last_valid_time['handwriting'] = 0.0
+            shared_state['handwriting_clear_flag'] = False
+        for m, (feat_key, id_key) in sources.items():
+            feats = shared_state.get(feat_key)
+            sid = int(shared_state.get(id_key, 0) or 0)
+            if feats is not None and sid > last_sample_ids[m]:
+                arr = np.asarray(feats, dtype=np.float32)
+                last_sample_ids[m] = sid
+                if arr.shape == (FEATURE_ONLY_BUFFERS[m],) and np.count_nonzero(arr) > 0:
+                    buffers[m] = np.roll(buffers[m], -1, axis=0)
+                    buffers[m][-1] = arr
+                    buffer_fills[m] = min(buffer_fills[m] + 1, T)
+                    last_valid_time[m] = now
+                    us[m] = us.get(m, 0) + 1
+            if last_valid_time[m] > 0 and (now - last_valid_time[m]) < AVAILABILITY_TIMEOUT:
+                runtime_mask[mod_order.index(m)] = 1.0
+                ic[m] = ic.get(m, 0) + 1
+
+        # ---- keyboard: the only stress-trained modality --------------------
+        window = list(shared_state.get('keyboard_window') or [])
+        buffer_fills['keystroke'] = len(window)
+        keyboard_id = int(shared_state.get('keyboard_sample_id', 0) or 0)
+        new_keyboard_sample = keyboard_id > last_sample_ids['keystroke']
+        if new_keyboard_sample:
+            us['keystroke'] = us.get('keystroke', 0) + (keyboard_id - last_sample_ids['keystroke'])
+            last_sample_ids['keystroke'] = keyboard_id
+            last_valid_time['keystroke'] = now
+        if last_valid_time['keystroke'] > 0 and (now - last_valid_time['keystroke']) < 30.0:
+            runtime_mask[2] = 1.0
+        elif shared_state.get('keyboard_status') == 'RECEIVING' and \
+                (now - float(shared_state.get('keyboard_last_sample_time', 0) or 0)) >= 30.0:
+            shared_state['keyboard_status'] = 'IDLE'
+
+        predicted_now = False
+        if is_trained and new_keyboard_sample and len(window) >= T:
+            X = np.asarray(window[-T:], dtype=np.float32)[None]
+            t_inf = time.perf_counter()
+            try:
+                stress_prob = float(predictor.predict_proba(X)[0])
+                shared_state['successful_cycles'] += 1
+            except Exception as e:
+                shared_state['failed_cycles'] += 1
+                print(f"Inference error: {e}")
+                continue
+            last_pred_latency = (time.perf_counter() - t_inf) * 1000
+            ic['keystroke'] = ic.get('keystroke', 0) + 1
+            pred_label = 1 if stress_prob >= predictor.threshold else 0
+            nonstress_prob = 1.0 - stress_prob
+            confidence = stress_prob if pred_label == 1 else nonstress_prob
+            now_ts = datetime.datetime.now().strftime("%H:%M:%S")
+            prediction_history.append({
                 'timestamp': now_ts,
                 'prediction': 'STRESS' if pred_label == 1 else 'NON-STRESS',
-                'stress_prob_pct': round(smoothed_stress_prob * 100, 1),
+                'stress_prob_pct': round(stress_prob * 100, 1),
                 'source': 'trained_model',
-            }
-        else:
-            history_entry = {
-                'timestamp': now_ts,
-                'prediction': 'ARCHITECTURE_TEST',
-                'stress_prob_pct': round(raw_stress_prob * 100, 1),
-                'source': 'untrained_debug',
-            }
-        prediction_history.append(history_entry)
-        if len(prediction_history) > MAX_HISTORY:
-            prediction_history.pop(0)
-        
-        # Write all fields to shared state
-        shared_state['predictions_available'] = is_trained
-        shared_state['fusion_prob'] = round(smoothed_stress_prob, 4) if is_trained else None
-        shared_state['fusion_pred'] = pred_label if is_trained else -1
-        shared_state['raw_stress_prob'] = round(raw_stress_prob, 4)
-        shared_state['raw_nonstress_prob'] = round(raw_nonstress_prob, 4)
-        shared_state['smoothed_stress_prob'] = round(smoothed_stress_prob, 4)
-        shared_state['smoothed_nonstress_prob'] = round(smoothed_nonstress_prob, 4)
-        shared_state['confidence'] = round(confidence, 4)
-        shared_state['modality_weights'] = _json.dumps(modality_weights)
-        shared_state['reliabilities'] = _json.dumps({
-            'keyboard': round(reliabilities[2], 4),
-            'speech': round(reliabilities[0], 4),
-            'facial': round(reliabilities[1], 4),
-            'eye_pupil': round(reliabilities[4], 4),
-            'handwriting': round(reliabilities[3], 4)
-        })
-        shared_state['unavailable_modalities'] = _json.dumps(unavailable)
-        shared_state['prediction_timestamp'] = now_ts
-        shared_state['prediction_history'] = _json.dumps(prediction_history)
-        
-        # Latency calculations
-        latencies = shared_state.get('latency', {})
-        active_lats = []
-        for i, mod in enumerate(['audio', 'face', 'keystroke', 'handwriting', 'eye']):
-            if ui_mask[i] > 0.5 and mod in latencies:
-                active_lats.append(latencies[mod])
-        max_ext_ms = max(active_lats) if active_lats else 0.0
-        
-        pipeline_ms = lat_fusion + max_ext_ms
-        shared_state['fusion_latency_ms'] = round(lat_fusion, 1)
-        shared_state['max_extraction_ms'] = round(max_ext_ms, 1)
-        shared_state['pipeline_latency_ms'] = round(pipeline_ms, 1)
+            })
+            prediction_history = prediction_history[-MAX_HISTORY:]
+            shared_state['predictions_available'] = True
+            shared_state['fusion_prob'] = round(stress_prob, 4)
+            shared_state['fusion_pred'] = pred_label
+            # No smoothing: the dashboard shows the model's real probability for the latest window.
+            shared_state['raw_stress_prob'] = round(stress_prob, 4)
+            shared_state['raw_nonstress_prob'] = round(nonstress_prob, 4)
+            shared_state['smoothed_stress_prob'] = round(stress_prob, 4)
+            shared_state['smoothed_nonstress_prob'] = round(nonstress_prob, 4)
+            shared_state['confidence'] = round(confidence, 4)
+            shared_state['prediction_timestamp'] = now_ts
+            shared_state['prediction_history'] = _json.dumps(prediction_history)
+            predicted_now = True
+        elif not is_trained:
+            shared_state['successful_cycles'] += 1
 
+        shared_state['unique_samples'] = us
+        shared_state['inference_counts'] = ic
+
+        # Only the keyboard feeds the stress model.
+        fusion_mask = [0.0, 0.0, 1.0 if (is_trained and buffer_fills['keystroke'] >= T) else 0.0, 0.0, 0.0]
+        attention = {'keyboard': 1.0 if fusion_mask[2] else 0.0, 'speech': 0.0, 'facial': 0.0,
+                     'eye_pupil': 0.0, 'handwriting': 0.0}
+        shared_state['modality_weights'] = _json.dumps(attention)
+        shared_state['reliabilities'] = _json.dumps(attention)
+        shared_state['fusion_mask'] = _json.dumps(fusion_mask)
+        shared_state['runtime_mask'] = _json.dumps(runtime_mask.tolist())
+        shared_state['buffer_fills'] = _json.dumps(buffer_fills)
+        shared_state['unavailable_modalities'] = _json.dumps(
+            [n for n, v in zip(['speech', 'facial', 'keyboard', 'handwriting', 'eye_pupil'], fusion_mask) if v < 0.5])
+
+        # ---- latency --------------------------------------------------------
+        latencies = shared_state.get('latency', {})
+        active_lats = [latencies[m] for i, m in enumerate(mod_order) if runtime_mask[i] > 0.5 and m in latencies]
+        max_ext_ms = max(active_lats) if active_lats else 0.0
+        shared_state['fusion_latency_ms'] = round(last_pred_latency, 2)
+        shared_state['max_extraction_ms'] = round(max_ext_ms, 1)
+        shared_state['pipeline_latency_ms'] = round(last_pred_latency + max_ext_ms, 1)
         feat_lat_samples.append(max_ext_ms)
-        inf_lat_samples.append(lat_fusion)
-        total_lat_samples.append(pipeline_ms)
+        inf_lat_samples.append(last_pred_latency)
+        total_lat_samples.append(last_pred_latency + max_ext_ms)
         cycle_timestamps.append(now)
         if len(feat_lat_samples) > LATENCY_WINDOW:
-            feat_lat_samples.pop(0)
-            inf_lat_samples.pop(0)
-            total_lat_samples.pop(0)
-            cycle_timestamps.pop(0)
-
-        def _percentiles(samples):
-            if not samples:
-                return {'p50': 0.0, 'p95': 0.0, 'max': 0.0}
-            ordered = sorted(samples)
-            n = len(ordered)
-            p50 = ordered[n // 2]
-            p95 = ordered[min(n - 1, int(n * 0.95))]
-            return {
-                'p50': round(p50, 1),
-                'p95': round(p95, 1),
-                'max': round(max(ordered), 1),
-            }
-
+            for lst in (feat_lat_samples, inf_lat_samples, total_lat_samples, cycle_timestamps):
+                lst.pop(0)
         scheduler_hz = 0.0
-        if len(cycle_timestamps) >= 2:
-            span = cycle_timestamps[-1] - cycle_timestamps[0]
-            if span > 0:
-                scheduler_hz = round((len(cycle_timestamps) - 1) / span, 2)
-
+        if len(cycle_timestamps) >= 2 and cycle_timestamps[-1] > cycle_timestamps[0]:
+            scheduler_hz = round((len(cycle_timestamps) - 1) / (cycle_timestamps[-1] - cycle_timestamps[0]), 2)
         shared_state['latency_percentiles'] = _json.dumps({
             'feature_extraction_ms': _percentiles(feat_lat_samples),
             'model_inference_ms': _percentiles(inf_lat_samples),
             'total_pipeline_ms': _percentiles(total_lat_samples),
             'scheduler_frequency_hz': scheduler_hz,
         })
-        
-        shared_state['fusion_mask'] = _json.dumps(ui_mask.tolist())
-        shared_state['buffer_fills'] = _json.dumps({
-            'audio': buffer_fills['audio'],
-            'face': buffer_fills['face'],
-            'keystroke': buffer_fills['keystroke'],
-            'handwriting': buffer_fills['handwriting'],
-            'eye': buffer_fills['eye']
-        })
-        
-        latencies['fusion'] = lat_fusion
-        latencies['pipeline'] = lat_fusion + max_ext_ms
-        
-        # Real-time logging
-        try:
-            with open(log_file_path, 'a') as lf:
-                log_line = f"{now_ts} | Mask: {ui_mask.tolist()} | Prob: {smoothed_stress_prob:.4f} | Attn: {[round(a, 3) for a in alphas]} | Ext: {max_ext_ms:.1f}ms | Inf: {lat_fusion:.1f}ms | Total: {(lat_fusion + max_ext_ms):.1f}ms\n"
-                lf.write(log_line)
-        except Exception:
-            pass
+        latencies['fusion'] = last_pred_latency
+        latencies['pipeline'] = last_pred_latency + max_ext_ms
+
+        # ---- runtime modality status ---------------------------------------
+        runtime_status = {}
+        mod_names_to_buf = {'speech': 'audio', 'facial': 'face', 'keyboard': 'keystroke',
+                            'handwriting': 'handwriting', 'eye_pupil': 'eye'}
+        mod_shapes = {'speech': 169, 'facial': 12, 'keyboard': 7, 'handwriting': 9, 'eye_pupil': 5}
+        runtime_mask_map = {'speech': 0, 'facial': 1, 'keyboard': 2, 'handwriting': 3, 'eye_pupil': 4}
+        hw_status_keys = {'speech': 'mic_status', 'facial': 'face_status', 'keyboard': 'keyboard_status',
+                          'handwriting': 'handwriting_status', 'eye_pupil': 'eye_status'}
+        sample_time_keys = {'keyboard': 'keyboard_last_sample_time', 'speech': 'audio_last_sample_time',
+                            'facial': 'face_last_sample_time', 'eye_pupil': 'eye_last_sample_time',
+                            'handwriting': 'handwriting_last_sample_time'}
+        for mod_name in ['keyboard', 'speech', 'facial', 'eye_pupil', 'handwriting']:
+            fill = buffer_fills.get(mod_names_to_buf[mod_name], 0)
+            hw_st = str(shared_state.get(hw_status_keys[mod_name], 'UNKNOWN'))
+            rm_active = runtime_mask[runtime_mask_map[mod_name]] > 0
+            if 'HARDWARE_UNAVAILABLE' in hw_st or 'ERROR' in hw_st:
+                status_str, input_str, feat_ready = 'UNAVAILABLE', 'NO HARDWARE', False
+            elif mod_name == 'handwriting':
+                if shared_state.get('handwriting_submission_count', 0) > 0 and fill > 0:
+                    status_str, input_str, feat_ready = 'ACTIVE', 'RECEIVING', True
+                else:
+                    status_str, input_str, feat_ready = 'WAITING', 'WAITING FOR HANDWRITING', False
+            elif rm_active or (mod_name in ('facial', 'eye_pupil') and shared_state.get('camera_connected', False)):
+                status_str, feat_ready = 'ACTIVE', fill > 0
+                if mod_name == 'keyboard':
+                    input_str = 'RECEIVING' if fill > 0 else 'WAITING FOR TYPING'
+                elif mod_name == 'speech':
+                    input_str = 'RECEIVING AUDIO' if fill > 0 else 'WAITING FOR MICROPHONE'
+                elif mod_name == 'facial':
+                    input_str = 'FACE DETECTED' if hw_st == 'DETECTED' else 'NO FACE DETECTED'
+                else:
+                    input_str = 'EYES DETECTED' if hw_st == 'DETECTED' else 'WAITING FOR EYE INPUT'
+            elif mod_name == 'keyboard' and shared_state.get('keyboard_status') == 'RECEIVING':
+                status_str, input_str, feat_ready = 'WAITING', 'KEEP TYPING', fill > 0
+            else:
+                status_str, input_str, feat_ready = 'NO INPUT', 'NO DATA', False
+            runtime_status[mod_name] = {
+                'status': status_str,
+                'input': input_str,
+                'features_ready': feat_ready,
+                'feature_shape': f"({mod_shapes[mod_name]},)" if feat_ready else None,
+                'buffer_fill': fill,
+                'samples': fill,
+                'feature_dimension': mod_shapes[mod_name],
+                'last_sample_time': shared_state.get(sample_time_keys[mod_name], 0.0),
+                'extraction_status': 'READY' if feat_ready else 'WAITING',
+                'role': 'STRESS MODEL INPUT' if mod_name == 'keyboard' else 'FEATURE EXTRACTION ONLY',
+            }
+        shared_state['runtime_modality_status'] = _json.dumps(runtime_status)
+
+        if predicted_now:
+            try:
+                with open(log_file_path, 'a') as lf:
+                    lf.write(f"{shared_state['prediction_timestamp']} | keyboard_window=10x7 | "
+                             f"P(stress)={shared_state['raw_stress_prob']:.4f} | thr={predictor.threshold:.3f} | "
+                             f"pred={'STRESS' if shared_state['fusion_pred'] == 1 else 'NON-STRESS'} | "
+                             f"inf={last_pred_latency:.2f}ms | runtime_mask={runtime_mask.tolist()}\n")
+            except Exception:
+                pass
 
 # FLASK SERVER
 app = Flask(__name__)
@@ -680,6 +712,8 @@ def init_app_state(shared_state):
 
 import threading
 import datetime as _dt
+CAMERA_STALE_SECONDS = 3.0
+MIC_STALE_SECONDS = 5.0
 local_cache = {}
 
 MODALITY_API_ORDER = ['keyboard', 'speech', 'facial', 'eye_pupil', 'handwriting']
@@ -695,7 +729,11 @@ MASK_INDEX_TO_MODALITY = {
 
 def _parse_json_field(raw, default):
     import json as _json
-    if raw and isinstance(raw, str):
+    if raw is None:
+        return default
+    if isinstance(raw, (dict, list)):
+        return raw
+    if isinstance(raw, str):
         try:
             return _json.loads(raw)
         except Exception:
@@ -707,14 +745,54 @@ def build_status_payload(state):
     """Build the canonical /status JSON contract for frontend and tests."""
     lat = dict(state.get('latency', {}) or {})
     model_status = state.get('model_status', 'LOADING')
+    now = time.time()
+    # Stale-input guard: if the browser stops sending frames / audio, do not keep
+    # reporting the last FACE DETECTED / RECEIVING AUDIO state.
+    last_frame_ts = float(state.get('last_frame_timestamp', 0.0) or 0.0)
+    camera_fresh = last_frame_ts > 0 and (now - last_frame_ts) < CAMERA_STALE_SECONDS
+    camera_connected = bool(state.get('camera_connected', False)) and camera_fresh
+    face_status = state.get('face_status', 'UNKNOWN')
+    eye_status = state.get('eye_status', 'UNKNOWN')
+    if not camera_fresh and face_status not in ('HARDWARE_UNAVAILABLE',):
+        face_status = 'WAITING_FOR_CAMERA'
+    if not camera_fresh and eye_status not in ('HARDWARE_UNAVAILABLE',):
+        eye_status = 'WAITING_FOR_CAMERA'
+    face_detected = bool(state.get('face_detected', False)) and camera_fresh
+    mic_status = state.get('mic_status', 'UNKNOWN')
+    last_audio_ts = max(float(state.get('audio_last_upload_time', 0.0) or 0.0),
+                        float(state.get('audio_last_sample_time', 0.0) or 0.0))
+    if mic_status == 'RECEIVING_AUDIO' and (now - last_audio_ts) >= MIC_STALE_SECONDS:
+        mic_status = 'WAITING_FOR_MIC'
     is_trained = model_status == 'TRAINED'
     is_live = bool(state.get('is_live_monitoring', False))
 
     reliabilities = _parse_json_field(state.get('reliabilities'), {})
     modality_attention = _parse_json_field(state.get('modality_weights'), {})
     fusion_mask = _parse_json_field(state.get('fusion_mask'), [0, 0, 0, 0, 0])
+    runtime_mask = _parse_json_field(state.get('runtime_mask'), [0, 0, 0, 0, 0])
     unavailable = _parse_json_field(state.get('unavailable_modalities'), [])
-    available = [m for m in MODALITY_API_ORDER if m not in unavailable]
+    runtime_modality_status = _parse_json_field(state.get('runtime_modality_status'), {})
+
+    # available_modalities: all modalities with active hardware (based on runtime_mask)
+    runtime_mask_to_mod = {0: 'speech', 1: 'facial', 2: 'keyboard', 3: 'handwriting', 4: 'eye_pupil'}
+    runtime_available = []
+    for idx, val in enumerate(runtime_mask):
+        if val > 0:
+            runtime_available.append(runtime_mask_to_mod.get(idx, ''))
+    # Also include modalities with hardware active but no data yet (e.g. handwriting waiting)
+    hw_status_map = {
+        'keyboard': state.get('keyboard_status', 'UNKNOWN'),
+        'speech': mic_status,
+        'facial': face_status,
+        'eye_pupil': eye_status,
+        'handwriting': state.get('handwriting_status', 'UNKNOWN'),
+    }
+    for mod_name, hw_st in hw_status_map.items():
+        hw_str = str(hw_st)
+        if 'HARDWARE_UNAVAILABLE' not in hw_str and 'ERROR' not in hw_str and mod_name not in runtime_available:
+            if hw_str not in ('UNKNOWN', 'PENDING'):
+                runtime_available.append(mod_name)
+    available = list(dict.fromkeys(runtime_available))  # deduplicate, preserve order
 
     buffer_fills = _parse_json_field(state.get('buffer_fills'), {})
     keyboard_fills = buffer_fills.get('keystroke', 0)
@@ -729,9 +807,16 @@ def build_status_payload(state):
     else:
         status = 'READY'
 
+    # Compute truly unavailable modalities (hardware problems only)
+    truly_unavailable = []
+    for mod_name, hw_st in hw_status_map.items():
+        hw_str = str(hw_st)
+        if 'HARDWARE_UNAVAILABLE' in hw_str or 'ERROR' in hw_str:
+            truly_unavailable.append(mod_name)
+
     fusion_pred = state.get('fusion_pred', 0)
     if is_trained and is_live:
-        if not keyboard_window_ready:
+        if not keyboard_window_ready or not state.get('predictions_available', False):
             prediction = 'WAITING FOR KEYBOARD WINDOW'
             stress_probability = None
             non_stress_probability = None
@@ -751,6 +836,20 @@ def build_status_payload(state):
     model_inference_ms = state.get('fusion_latency_ms', 0.0)
     total_pipeline_ms = state.get('pipeline_latency_ms', 0.0)
 
+    trained_mods_raw = _parse_json_field(state.get('trained_modalities'), [])
+    usable_mods = []
+    for m in available:
+        if m in trained_mods_raw:
+            usable_mods.append(m)
+        elif m == 'speech' and 'audio' in trained_mods_raw:
+            usable_mods.append(m)
+        elif m == 'facial' and 'face' in trained_mods_raw:
+            usable_mods.append(m)
+        elif m == 'keyboard' and 'keystroke' in trained_mods_raw:
+            usable_mods.append(m)
+        elif m == 'eye_pupil' and 'eye' in trained_mods_raw:
+            usable_mods.append(m)
+
     payload = {
         'status': status,
         'model_status': model_status,
@@ -763,10 +862,19 @@ def build_status_payload(state):
         'modality_reliability': reliabilities,
         'modality_attention': modality_attention,
         'available_modalities': available,
-        'unavailable_modalities': unavailable,
-        'trained_modalities': _parse_json_field(state.get('trained_modalities'), []),
-        'usable_modalities': [m for m in available if m in _parse_json_field(state.get('trained_modalities'), []) or (m == 'speech' and 'audio' in _parse_json_field(state.get('trained_modalities'), [])) or (m == 'facial' and 'face' in _parse_json_field(state.get('trained_modalities'), [])) or (m == 'keyboard' and 'keystroke' in _parse_json_field(state.get('trained_modalities'), [])) or (m == 'eye_pupil' and 'eye' in _parse_json_field(state.get('trained_modalities'), []))],
-        'prediction_source': 'trained_model' if is_trained else 'untrained_debug',
+        'unavailable_modalities': truly_unavailable,
+        'trained_modalities': trained_mods_raw,
+        'usable_modalities': usable_mods,
+        'runtime_modality_status': runtime_modality_status,
+        'runtime_mask': runtime_mask,
+        'prediction_source': 'trained_model' if is_trained else 'none',
+        'stress_model': {
+            'modality': 'keyboard',
+            'model_name': state.get('model_name', ''),
+            'decision_threshold': state.get('decision_threshold'),
+            'test_metrics': _parse_json_field(state.get('model_test_metrics'), {}),
+        },
+        'feature_only_modalities': ['speech', 'facial', 'eye_pupil', 'handwriting'],
         'window_size': 10,
         'timestamp': _dt.datetime.now().isoformat(timespec='seconds'),
         'latency': {
@@ -779,9 +887,9 @@ def build_status_payload(state):
         'dataset_name': state.get('dataset_name', 'UNKNOWN'),
         'checkpoint_name': state.get('checkpoint_name', ''),
         'model_load_time_ms': state.get('model_load_time_ms', 0.0),
-        'face_status': state.get('face_status', 'UNKNOWN'),
-        'eye_status': state.get('eye_status', 'UNKNOWN'),
-        'mic_status': state.get('mic_status', 'UNKNOWN'),
+        'face_status': face_status,
+        'eye_status': eye_status,
+        'mic_status': mic_status,
         'keyboard_status': state.get('keyboard_status', 'UNKNOWN'),
         'handwriting_status': state.get('handwriting_status', 'UNKNOWN'),
         'fusion_prob': state.get('fusion_prob', 0.0),
@@ -798,6 +906,7 @@ def build_status_payload(state):
         'audio_sample_count': state.get('audio_sample_count', 0),
         'camera_frame_count': state.get('camera_frame_count', 0),
         'face_detection_count': state.get('face_detection_count', 0),
+        'face_fer_inference_count': state.get('face_fer_inference_count', 0),
         'eye_detection_count': state.get('eye_detection_count', 0),
         'handwriting_submission_count': state.get('handwriting_submission_count', 0),
         'fusion_mask': fusion_mask,
@@ -809,25 +918,28 @@ def build_status_payload(state):
         'failed_cycles': state.get('failed_cycles', 0),
         'dropped_cycles': state.get('dropped_cycles', 0),
         'app_start_time': state.get('app_start_time', 0.0),
-        'camera_connected': state.get('camera_connected', False),
+        'camera_connected': camera_connected,
         'camera_index': state.get('camera_index', -1),
+        'camera_width': state.get('camera_width', 0),
+        'camera_height': state.get('camera_height', 0),
         'camera_fps': state.get('camera_fps', 0.0),
         'last_frame_timestamp': state.get('last_frame_timestamp', 0.0),
-        'face_detected': state.get('face_detected', False),
-        'face_count': state.get('face_count', 0),
+        'face_detected': face_detected,
+        'face_count': state.get('face_count', 0) if face_detected else 0,
         'face_confidence': state.get('face_confidence', 'N/A'),
-        'face_bbox': state.get('face_bbox', None),
+        'face_bbox': state.get('face_bbox', None) if face_detected else None,
+        'face_emotion_label': state.get('face_emotion_label', None) if face_detected else None,
+        'eye_detected': eye_status == 'DETECTED',
+        'keyboard_pending_keystrokes': state.get('keyboard_pending_keystrokes', 0),
+        'latest_features': {
+            'keyboard_7d': state.get('keystroke_features_display'),
+            'eye_5d': state.get('eye_features_display'),
+            'face_12d': state.get('face_features_display'),
+            'speech_169d_summary': state.get('audio_features_summary'),
+            'handwriting_9d': state.get('handwriting_features_display'),
+        },
+        'face_emotion_probs': _parse_json_field(state.get('face_emotion_probs'), {}),
     }
-
-    if model_status == 'UNTRAINED' and is_live:
-        payload['architecture_debug'] = {
-            'note': 'Synthetic/untrained forward-pass values — NOT valid stress detection',
-            'raw_stress_probability': state.get('raw_stress_prob', 0.0),
-            'raw_non_stress_probability': state.get('raw_nonstress_prob', 1.0),
-            'smoothed_stress_probability': state.get('smoothed_stress_prob', 0.0),
-            'modality_attention': modality_attention,
-            'modality_reliability': reliabilities,
-        }
 
     return payload
 
@@ -848,13 +960,74 @@ def update_local_cache():
 
 
 
+@app.after_request
+def _no_store(resp):
+    if request.path in ('/status', '/camera/status', '/api/model_status'):
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+    return resp
+
+
 @app.route('/status')
 def status():
-    return jsonify(local_cache if local_cache else {})
+    # Rebuild on demand so the response is never older than the request.
+    try:
+        return jsonify(build_status_payload(manager_dict))
+    except Exception:
+        return jsonify(local_cache if local_cache else {})
+
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    data = request.get_json(silent=True) or {}
+    question = str(data.get('message', '')).strip()
+    if not question:
+        return jsonify({'error': 'Please enter a question.'}), 400
+    if len(question) > 1000:
+        return jsonify({'error': 'Please keep questions under 1000 characters.'}), 400
+
+    api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        return jsonify({'error': 'Gemini is not configured on the backend.'}), 503
+
+    project_context = """You explain this project only:
+Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence.
+
+Runtime modalities: Keyboard, Facial, Eye/Pupil, Speech, Handwriting.
+Keyboard is currently the only actual stress-prediction modality. Real keyboard input becomes 7D typing features, 10 temporal samples, a trained Freihaut & Goeritz keyboard stress model, and STRESS/NON-STRESS probability/confidence.
+Face, eye/pupil, speech, and handwriting receive real browser input and perform feature extraction only; they are not independently validated stress predictors.
+FER emotion is never stress detection. RAVDESS emotion is never stress detection. Personality features are never stress detection.
+The current keyboard evaluation is approximately 54.6% test accuracy and 0.554 ROC-AUC on the participant-independent Freihaut & Goeritz dataset, indicating weak predictive signal. Do not claim 94.3% as current accuracy.
+The system is a research prototype and is not a medical diagnosis system.
+Face uses the visitor webcam for real face detection and facial features. Eye uses the same camera for real landmarks and 5D eye features. Speech uses the visitor microphone for real 169D audio features. Handwriting uses the real canvas for 9D stroke features.
+If a question is unrelated to this project, say that you are focused on explaining this project. Never invent metrics, datasets, models, features, capabilities, or results. Keep answers concise and accessible."""
+    payload = {
+        'contents': [{'role': 'user', 'parts': [{'text': question}]}],
+        'systemInstruction': {'parts': [{'text': project_context}]},
+        'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 300},
+    }
+    endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=' + api_key
+    request_body = json.dumps(payload).encode('utf-8')
+    gemini_request = urllib.request.Request(
+        endpoint,
+        data=request_body,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(gemini_request, timeout=20) as response:
+            result = json.loads(response.read().decode('utf-8'))
+        answer = result['candidates'][0]['content']['parts'][0]['text'].strip()
+        if not answer:
+            raise ValueError('Gemini returned an empty response.')
+        return jsonify({'answer': answer, 'provider': 'gemini'}), 200
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, KeyError, IndexError, ValueError, json.JSONDecodeError) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            detail = f'Gemini request failed ({exc.code}).'
+        else:
+            detail = 'Gemini is temporarily unavailable.'
+        return jsonify({'error': detail}), 502
 
 @app.route('/camera/status')
 def camera_status():
-    import time
     last_frame_ts = local_cache.get('last_frame_timestamp', 0.0)
     frame_age_ms = (time.time() - last_frame_ts) * 1000 if last_frame_ts > 0 else None
     
@@ -870,16 +1043,177 @@ def camera_status():
         'last_frame_timestamp': last_frame_ts
     })
 
+@app.route('/api/model_status')
+def api_model_status():
+    import json
+    try:
+        us = manager_dict.get('unique_samples', {})
+    except Exception:
+        us = {}
+    try:
+        ic = manager_dict.get('inference_counts', {})
+    except Exception:
+        ic = {}
+        
+    def _safe_get(d, key, default=0):
+        try:
+            return d.get(key, default)
+        except Exception:
+            return default
+
+    return jsonify([
+        {
+          "modality": "keyboard",
+          "samples_received": _safe_get(us, 'keystroke', 0),
+          "unique_samples": _safe_get(us, 'keystroke', 0),
+          "buffer_size": 10,
+          "feature_dimension": 7,
+          "model_loaded": manager_dict.get('model_status') == 'TRAINED',
+          "model_inference_count": _safe_get(ic, 'keystroke', 0),
+          "training_dataset": "Freihaut & Goeritz (2021)",
+          "training_label_type": "stress (experimental condition)",
+          "model_name": manager_dict.get('model_name', '')
+        },
+        {
+          "modality": "speech",
+          "samples_received": _safe_get(us, 'audio', 0),
+          "unique_samples": _safe_get(us, 'audio', 0),
+          "buffer_size": 10,
+          "feature_dimension": 169,
+          "model_loaded": False,
+          "model_inference_count": 0,
+          "training_dataset": "N/A",
+          "training_label_type": "none (feature only)"
+        },
+        {
+          "modality": "facial",
+          "samples_received": _safe_get(us, 'face', 0),
+          "unique_samples": _safe_get(us, 'face', 0),
+          "buffer_size": 10,
+          "feature_dimension": 12,
+          "model_loaded": False,
+          "model_inference_count": 0,
+          "training_dataset": "N/A (FER-2013 emotion shown for display only, not used for stress)",
+          "training_label_type": "none (feature only)"
+        },
+        {
+          "modality": "eye/pupil",
+          "samples_received": _safe_get(us, 'eye', 0),
+          "unique_samples": _safe_get(us, 'eye', 0),
+          "buffer_size": 10,
+          "feature_dimension": 5,
+          "model_loaded": False,
+          "model_inference_count": 0,
+          "training_dataset": "N/A",
+          "training_label_type": "none (feature only)"
+        },
+        {
+          "modality": "handwriting",
+          "samples_received": _safe_get(us, 'handwriting', 0),
+          "unique_samples": _safe_get(us, 'handwriting', 0),
+          "buffer_size": 10,
+          "feature_dimension": 9,
+          "model_loaded": False,
+          "model_inference_count": 0,
+          "training_dataset": "N/A",
+          "training_label_type": "none (feature only)"
+        }
+    ])
+
 @app.route('/upload_handwriting', methods=['POST'])
 def upload_handwriting():
     data = request.json
+    if not manager_dict.get('is_live_monitoring'):
+        return jsonify({'error': 'Monitoring is stopped.'}), 409
     if not data or 'image' not in data:
         return jsonify({'error': 'No image provided'}), 400
     b64_str = data['image']
     if b64_str.startswith('data:image/png;base64,'):
         b64_str = b64_str.replace('data:image/png;base64,', '')
+    import json as _json
+    strokes = data.get('strokes')
+    manager_dict['live_handwriting_strokes'] = _json.dumps(strokes) if isinstance(strokes, list) else None
     manager_dict['live_handwriting_b64'] = b64_str
     return jsonify({'status': 'success'})
+
+def _new_session_marker():
+    """Start a fresh keyboard window / prediction history (no stale values)."""
+    manager_dict['keyboard_session_marker'] = time.time_ns()
+    manager_dict['keyboard_window'] = []
+    manager_dict['keystroke_features'] = None
+    manager_dict['keyboard_pending_keystrokes'] = 0
+    manager_dict['remote_keystroke_events'] = None
+    manager_dict['remote_frame_b64'] = None
+    manager_dict['remote_audio_b64'] = None
+    manager_dict['live_handwriting_b64'] = None
+    manager_dict['live_handwriting_strokes'] = None
+    manager_dict['audio_features'] = None
+    manager_dict['face_features'] = None
+    manager_dict['eye_features'] = None
+    manager_dict['handwriting_features'] = None
+    manager_dict['buffer_fills'] = '{}'
+    manager_dict['runtime_modality_status'] = '{}'
+    manager_dict['runtime_mask'] = '[0,0,0,0,0]'
+    manager_dict['fusion_mask'] = '[0,0,0,0,0]'
+    manager_dict['prediction_timestamp'] = ''
+    manager_dict['session_start_time'] = 0.0
+    manager_dict['keyboard_status'] = 'WAITING_FOR_INPUT'
+    manager_dict['mic_status'] = 'WAITING_FOR_MIC'
+    manager_dict['face_status'] = 'WAITING_FOR_CAMERA'
+    manager_dict['eye_status'] = 'WAITING_FOR_CAMERA'
+    manager_dict['handwriting_status'] = 'WAITING_FOR_INPUT'
+    for key in ('audio_sample_count', 'audio_sample_id', 'keyboard_sample_id',
+                'camera_frame_count', 'face_detection_count', 'eye_detection_count',
+                'face_sample_id', 'eye_sample_id', 'handwriting_submission_count',
+                'handwriting_sample_id'):
+        manager_dict[key] = 0
+    manager_dict['predictions_available'] = False
+    manager_dict['fusion_pred'] = -1
+    manager_dict['prediction_history'] = '[]'
+    manager_dict['raw_stress_prob'] = None
+    manager_dict['raw_nonstress_prob'] = None
+    manager_dict['smoothed_stress_prob'] = None
+    manager_dict['smoothed_nonstress_prob'] = None
+    manager_dict['confidence'] = None
+
+
+def _stop_session_state():
+    manager_dict['is_live_monitoring'] = False
+    manager_dict['keyboard_window'] = []
+    manager_dict['status'] = 'READY'
+    manager_dict['remote_keystroke_events'] = None
+    manager_dict['remote_frame_b64'] = None
+    manager_dict['remote_audio_b64'] = None
+    manager_dict['live_handwriting_b64'] = None
+    manager_dict['live_handwriting_strokes'] = None
+    manager_dict['audio_features'] = None
+    manager_dict['face_features'] = None
+    manager_dict['eye_features'] = None
+    manager_dict['handwriting_features'] = None
+    manager_dict['prediction_timestamp'] = ''
+    manager_dict['predictions_available'] = False
+    manager_dict['fusion_prob'] = None
+    manager_dict['fusion_pred'] = -1
+    manager_dict['raw_stress_prob'] = None
+    manager_dict['raw_nonstress_prob'] = None
+    manager_dict['smoothed_stress_prob'] = None
+    manager_dict['smoothed_nonstress_prob'] = None
+    manager_dict['confidence'] = None
+    manager_dict['prediction_history'] = '[]'
+    manager_dict['buffer_fills'] = '{}'
+    manager_dict['runtime_modality_status'] = '{}'
+    manager_dict['runtime_mask'] = '[0,0,0,0,0]'
+    manager_dict['fusion_mask'] = '[0,0,0,0,0]'
+    manager_dict['camera_connected'] = False
+    manager_dict['face_detected'] = False
+    manager_dict['face_bbox'] = None
+    manager_dict['keyboard_status'] = 'WAITING_FOR_INPUT'
+    manager_dict['mic_status'] = 'WAITING_FOR_MIC'
+    manager_dict['face_status'] = 'WAITING_FOR_CAMERA'
+    manager_dict['eye_status'] = 'WAITING_FOR_CAMERA'
+    manager_dict['handwriting_status'] = 'WAITING_FOR_INPUT'
+    manager_dict['session_start_time'] = 0.0
+
 
 @app.route('/api/control', methods=['POST'])
 def api_control():
@@ -887,23 +1221,66 @@ def api_control():
     action = data.get('action')
     if action == 'start':
         if not manager_dict['is_live_monitoring']:
+            _new_session_marker()
             manager_dict['session_start_time'] = time.time()
             manager_dict['is_live_monitoring'] = True
             manager_dict['status'] = 'LIVE'
     elif action == 'stop':
-        manager_dict['is_live_monitoring'] = False
-        manager_dict['status'] = 'READY'
+        _stop_session_state()
     elif action == 'reset':
+        _stop_session_state()
+        _new_session_marker()
         manager_dict['total_cycles'] = 0
         manager_dict['successful_cycles'] = 0
         manager_dict['failed_cycles'] = 0
         manager_dict['dropped_cycles'] = 0
-        manager_dict['session_start_time'] = time.time() if manager_dict['is_live_monitoring'] else 0.0
+        manager_dict['session_start_time'] = 0.0
         manager_dict['status'] = 'READY'
     elif action == 'clear_handwriting':
         manager_dict['handwriting_status'] = 'WAITING_FOR_INPUT'
         manager_dict['handwriting_clear_flag'] = True
     return jsonify({'status': 'success', 'is_live_monitoring': manager_dict['is_live_monitoring']})
+
+@app.route('/api/upload_frame', methods=['POST'])
+def api_upload_frame():
+    data = request.json
+    if manager_dict.get('is_live_monitoring') and data and 'image' in data:
+        manager_dict['camera_connected'] = True
+        manager_dict['remote_frame_b64'] = data['image']
+    return jsonify({"status": "ok"})
+
+@app.route('/api/upload_audio', methods=['POST'])
+def api_upload_audio():
+    data = request.json
+    if manager_dict.get('is_live_monitoring') and data and 'audio' in data:
+        manager_dict['mic_status'] = 'RECEIVING_AUDIO'
+        manager_dict['audio_last_upload_time'] = time.time()
+        manager_dict['remote_audio_b64'] = data['audio']
+    return jsonify({"status": "ok"})
+
+@app.route('/api/media_status', methods=['POST'])
+def api_media_status():
+    data = request.json or {}
+    if not manager_dict.get('is_live_monitoring'):
+        return jsonify({'status': 'ignored'}), 409
+    if data.get('camera') == 'UNAVAILABLE':
+        main_shared_state['camera_connected'] = False
+        main_shared_state['face_status'] = 'HARDWARE_UNAVAILABLE'
+        main_shared_state['eye_status'] = 'HARDWARE_UNAVAILABLE'
+    if data.get('microphone') == 'UNAVAILABLE':
+        main_shared_state['mic_status'] = 'HARDWARE_UNAVAILABLE'
+    return jsonify({'status': 'ok'})
+
+@app.route('/api/upload_keystrokes', methods=['POST'])
+def api_upload_keystrokes():
+    data = request.json
+    if manager_dict.get('is_live_monitoring') and data and 'events' in data:
+        import json
+        with KEY_EVENTS_LOCK:
+            pending = main_shared_state.get('remote_keystroke_events')
+            events = (json.loads(pending) if pending else []) + list(data['events'])
+            main_shared_state['remote_keystroke_events'] = json.dumps(events)
+    return jsonify({"status": "ok"})
 
 def gen_frames():
     while manager_dict.get('running', True):
@@ -922,20 +1299,20 @@ def index():
     return render_template('index.html')
 
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
     
-    man = multiprocessing.Manager()
-    main_shared_state = man.dict({
+    
+    
+    main_shared_state = dict({
         'running': True,
         'audio_features': None,
         'face_features': None,
         'keystroke_features': None,
         'handwriting_features': None,
         'eye_features': None,
-        'fusion_prob': 0.0,
-        'fusion_pred': 0,
-        'modalities': man.dict(),
-        'latency': man.dict(),
+        'fusion_prob': None,
+        'fusion_pred': -1,
+        'modalities': dict(),
+        'latency': dict(),
         'model_status': 'LOADING',
         'checkpoint_name': '',
         'face_status': 'PENDING',
@@ -944,13 +1321,19 @@ if __name__ == '__main__':
         'keyboard_status': 'PENDING',
         'handwriting_status': 'WAITING_FOR_INPUT',
         'live_handwriting_b64': None,
+        'live_handwriting_strokes': None,
         'latest_frame_jpg': None,
+        'keyboard_window': [],
+        'keyboard_session_marker': 0.0,
+        'keyboard_pending_keystrokes': 0,
+        'audio_last_upload_time': 0.0,
+        'predictions_available': False,
         # Prediction output fields
-        'raw_stress_prob': 0.0,
-        'raw_nonstress_prob': 1.0,
-        'smoothed_stress_prob': 0.0,
-        'smoothed_nonstress_prob': 1.0,
-        'confidence': 0.0,
+        'raw_stress_prob': None,
+        'raw_nonstress_prob': None,
+        'smoothed_stress_prob': None,
+        'smoothed_nonstress_prob': None,
+        'confidence': None,
         'modality_weights': '{}',
         'reliabilities': '{}',
         'unavailable_modalities': '[]',
@@ -959,14 +1342,27 @@ if __name__ == '__main__':
         'prediction_history': '[]',
         'fusion_latency_ms': 0.0,
         'fusion_mask': '[0,0,0,0,0]',
+        'runtime_mask': '[0,0,0,0,0]',
         'buffer_fills': '{}',
+        'runtime_modality_status': '{}',
         # Diagnostic counters
         'keyboard_event_count': 0,
         'audio_sample_count': 0,
+        'audio_sample_id': 0,
+        'audio_last_sample_time': 0.0,
+        'keyboard_sample_id': 0,
+        'keyboard_last_sample_time': 0.0,
         'camera_frame_count': 0,
         'face_detection_count': 0,
         'eye_detection_count': 0,
+        'face_sample_id': 0,
+        'face_last_sample_time': 0.0,
+        'eye_sample_id': 0,
+        'eye_last_sample_time': 0.0,
+        'face_fer_inference_count': 0,
         'handwriting_submission_count': 0,
+        'handwriting_sample_id': 0,
+        'handwriting_last_sample_time': 0.0,
         'face_last_valid_time': 0.0,
         'eye_last_valid_time': 0.0,
         'handwriting_last_valid_time': 0.0,
@@ -984,11 +1380,11 @@ if __name__ == '__main__':
     init_app_state(main_shared_state)
     
     workers = [
-        multiprocessing.Process(target=keyboard_worker, args=(main_shared_state,), daemon=True),
-        multiprocessing.Process(target=audio_worker, args=(main_shared_state,), daemon=True),
-        multiprocessing.Process(target=webcam_worker, args=(main_shared_state,), daemon=True),
-        multiprocessing.Process(target=handwriting_worker, args=(main_shared_state,), daemon=True),
-        multiprocessing.Process(target=inference_worker, args=(main_shared_state,), daemon=True)
+        threading.Thread(target=keyboard_worker, args=(main_shared_state,), daemon=True),
+        threading.Thread(target=audio_worker, args=(main_shared_state,), daemon=True),
+        threading.Thread(target=webcam_worker, args=(main_shared_state,), daemon=True),
+        threading.Thread(target=handwriting_worker, args=(main_shared_state,), daemon=True),
+        threading.Thread(target=inference_worker, args=(main_shared_state,), daemon=True)
     ]
     
     for w in workers:
@@ -997,8 +1393,8 @@ if __name__ == '__main__':
     print("========================================")
     print("RA-HMSD REAL-TIME MULTIMODAL SERVER")
     print("========================================")
-    print("Dashboard URL: http://localhost:5000")
-    print("API Endpoint:  http://localhost:5000/status")
+    print(f"Dashboard URL: http://localhost:{os.environ.get('PORT', 5000)}")
+    print(f"API Endpoint:  http://localhost:{os.environ.get('PORT', 5000)}/status")
     print("========================================\n")
     
     import logging
@@ -1008,12 +1404,12 @@ if __name__ == '__main__':
     try:
         cache_thread = threading.Thread(target=update_local_cache, daemon=True)
         cache_thread.start()
-        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, use_reloader=False, threaded=True)
     except KeyboardInterrupt:
         pass
     finally:
         main_shared_state['running'] = False
         for w in workers:
-            w.terminate()
+            
             w.join()
 

@@ -1,15 +1,15 @@
 {
-  "dataset": "Freihaut & G\u00f6ritz (2021) Keyboard Stress",
+  "dataset": "Freihaut & Goeritz (2021) Keyboard Stress",
   "source": "Zenodo 10.5281/zenodo.4445197",
-  "participants_total": 1064,
-  "participants_train": 744,
+  "participants_total": 1063,
+  "participants_train": 745,
   "participants_val": 159,
-  "participants_test": 161,
-  "train_windows": 4664,
-  "val_windows": 979,
-  "test_windows": 954,
+  "participants_test": 159,
+  "train_windows": 2365,
+  "val_windows": 504,
+  "test_windows": 493,
   "stress_windows": 1664,
-  "nonstress_windows": 4933,
+  "nonstress_windows": 1698,
   "feature_count": 7,
   "feature_names": [
     "mean_dwell",
@@ -23,23 +23,14 @@
   "window_length": 10,
   "keystrokes_per_subwindow": 4,
   "stride_subwindows": 1,
-  "min_keystrokes_per_trial": 20,
   "random_seed": 42,
-  "split_method": "participant-independent (70/15/15)",
-  "normalization": "z-score (train-set statistics)",
+  "split_method": "participant-independent, stratified by study and label pattern (70/15/15)",
+  "normalization": "none (raw features); train-only scaler saved by train.py",
   "label_mapping": {
-    "0": "NON-STRESS (Low-Stress condition)",
-    "1": "STRESS (High-Stress condition)"
+    "0": "NON-STRESS (low-stress condition)",
+    "1": "STRESS (high-stress condition)"
   },
+  "label_source": "lab HS/LS PatternTyping; online Con_PatternTyping by assigned condition; practice trials excluded",
   "tensor_shape": "(N, 10, 7)",
-  "feature_definitions": {
-    "mean_dwell": "Mean dwell time in ms (KeyDown to KeyUp)",
-    "std_dwell": "Std dev of dwell time in ms",
-    "mean_flight": "Mean flight time in ms (KeyUp to next KeyDown)",
-    "std_flight": "Std dev of flight time in ms",
-    "typing_speed": "Keystrokes per second in sub-window",
-    "backspace_freq": "Fraction of keystrokes that are Backspace (0-1)",
-    "error_rate": "Fraction of keystrokes marked incorrect (0-1)"
-  },
   "leakage_audit_pass": true
 }

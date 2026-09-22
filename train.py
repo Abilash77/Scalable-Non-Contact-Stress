@@ -1,253 +1,293 @@
-import os
-import argparse
-import sys
-import json
-import datetime
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.callbacks import ModelCheckpoint, CSVLogger, EarlyStopping
+"""
+Keyboard stress model training (Freihaut & Goeritz 2021).
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-from DL_models import get_model, custom_fusion_loss
+    python scripts/preprocess_freihaut.py   # raw (N,10,7) arrays + participant ids
+    python train.py --retrain               # model selection + one test evaluation
+
+Protocol
+  * participant-independent train / val / test (from preprocessing)
+  * scaler (log + z-score) fitted on TRAIN only, saved next to the checkpoint
+  * class weights from TRAIN only
+  * every candidate / hyper-parameter is scored on VALIDATION only (ROC-AUC)
+  * decision threshold chosen on VALIDATION (max balanced accuracy)
+  * the selected model is evaluated ONCE on the untouched TEST split
+"""
+import argparse
+import datetime
+import json
+import os
+import sys
+
+import numpy as np
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(ROOT, 'src'))
+from keyboard_stress_features import (  # noqa: E402
+    FEATURE_NAMES, KEYSTROKES_PER_SUBWINDOW, KeyboardFeatureTransform, summary_features,
+)
+
+DATA_DIR = os.path.join(ROOT, 'data', 'processed', 'freihaut')
+CP_DIR = os.path.join(ROOT, 'results', 'checkpoints')
+META_FILE = 'keyboard_stress_model_metadata.json'
+SCALER_FILE = 'keyboard_stress_scaler.json'
+SEED = 42
+
+
+def load_split(name):
+    X = np.load(os.path.join(DATA_DIR, f'X_{name}.npy'))
+    y = np.load(os.path.join(DATA_DIR, f'y_{name}.npy'))
+    pid = np.load(os.path.join(DATA_DIR, f'pid_{name}.npy'))
+    trial = np.load(os.path.join(DATA_DIR, f'trial_{name}.npy'))
+    return X, y, pid, trial
+
 
 def validate_preprocessing():
-    """Validate that Freihaut preprocessing has been completed correctly."""
-    required_files = [
-        'data/processed/freihaut/X_train.npy',
-        'data/processed/freihaut/y_train.npy',
-        'data/processed/freihaut/X_val.npy',
-        'data/processed/freihaut/y_val.npy',
-        'data/processed/freihaut/X_test.npy',
-        'data/processed/freihaut/y_test.npy',
-    ]
-    
-    missing = [f for f in required_files if not os.path.exists(f)]
+    needed = [f'{k}_{s}.npy' for k in ('X', 'y', 'pid', 'trial') for s in ('train', 'val', 'test')]
+    missing = [n for n in needed if not os.path.exists(os.path.join(DATA_DIR, n))]
     if missing:
-        print("[ERROR] Freihaut preprocessing not complete. Missing files:")
-        for f in missing:
-            print(f"  - {f}")
-        print("\nRun: python scripts/preprocess_freihaut.py")
-        sys.exit(1)
-    
-    # Validate metadata
-    meta_path = 'results/freihaut_preprocessing_metadata.json'
-    if not os.path.exists(meta_path):
-        print(f"[ERROR] Missing preprocessing metadata: {meta_path}")
-        print("Run: python scripts/preprocess_freihaut.py")
-        sys.exit(1)
-    
-    with open(meta_path, 'r') as f:
-        meta = json.load(f)
-    
-    if not meta.get('leakage_audit_pass', False):
-        print("[ERROR] Leakage audit did not pass. Fix preprocessing before training.")
-        sys.exit(1)
-    
-    # Validate leakage audit
-    audit_path = 'results/freihaut_leakage_audit.json'
-    if os.path.exists(audit_path):
-        with open(audit_path, 'r') as f:
-            audit = json.load(f)
-        if not audit.get('PASS', False):
-            print("[ERROR] Leakage audit FAILED. Fix preprocessing before training.")
-            sys.exit(1)
-    
-    print("[OK] Preprocessing validation passed.")
-    return meta
+        sys.exit(f"[ERROR] Missing preprocessed arrays {missing}. Run: python scripts/preprocess_freihaut.py")
+    with open(os.path.join(ROOT, 'results', 'freihaut_leakage_audit.json')) as f:
+        if not json.load(f).get('PASS'):
+            sys.exit("[ERROR] Leakage audit failed; fix preprocessing first.")
+    splits = {s: load_split(s) for s in ('train', 'val', 'test')}
+    p = {s: set(splits[s][2]) for s in splits}
+    assert not (p['train'] & p['val']) and not (p['train'] & p['test']) and not (p['val'] & p['test']), \
+        "participant leakage between splits"
+    return splits
 
-def load_data(split='train', batch_size=32):
-    validate_preprocessing()
-    
-    X = np.load(f'data/processed/freihaut/X_{split}.npy')
-    y = np.load(f'data/processed/freihaut/y_{split}.npy')
 
-    N = len(X)
-    
-    # We only have keystroke data, but the fusion model expects 5 modalities.
-    # Modality order: ["audio", "face", "keystroke", "handwriting", "eye"]
-    mask = np.zeros((N, 5), dtype=np.float32)
-    mask[:, 2] = 1.0  # Only keystroke is available
-    
-    inputs = {
-        'input_audio': np.zeros((N, 10, 169), dtype=np.float32),
-        'input_face': np.zeros((N, 10, 12), dtype=np.float32),
-        'input_keystroke': X,
-        'input_handwriting': np.zeros((N, 10, 9), dtype=np.float32),
-        'input_eye': np.zeros((N, 10, 5), dtype=np.float32),
-        'input_mask': mask
+def metrics(y, prob, thr):
+    from sklearn.metrics import (accuracy_score, balanced_accuracy_score, confusion_matrix,
+                                 f1_score, precision_score, recall_score, roc_auc_score)
+    pred = (prob >= thr).astype(int)
+    return {
+        'accuracy': float(accuracy_score(y, pred)),
+        'balanced_accuracy': float(balanced_accuracy_score(y, pred)),
+        'precision': float(precision_score(y, pred, zero_division=0)),
+        'recall': float(recall_score(y, pred, zero_division=0)),
+        'f1': float(f1_score(y, pred, zero_division=0)),
+        'roc_auc': float(roc_auc_score(y, prob)),
+        'confusion_matrix': confusion_matrix(y, pred, labels=[0, 1]).tolist(),
+        'n': int(len(y)),
     }
-    
-    outputs = {
-        'fusion_output': y,
-        'unimodal_audio': y,
-        'unimodal_face': y,
-        'unimodal_keystroke': y,
-        'unimodal_handwriting': y,
-        'unimodal_eye': y
-    }
-    
-    return inputs, outputs
 
-def train_fusion(epochs, batch_size, retrain=False):
-    print("\n" + "="*60)
-    print("RA-HMSD SCIENTIFIC TRAINING PIPELINE (FREIHAUT & GÖRITZ KEYBOARD STRESS)")
-    print("="*60 + "\n")
-    
-    checkpoint_dir = "results/checkpoints/"
-    meta_path = os.path.join(checkpoint_dir, 'training_metadata.json')
-    
-    if os.path.exists(meta_path):
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            if meta.get("is_trained") and not meta.get("is_prototype", False) and not retrain:
-                print("[MODEL] Valid trained checkpoint already exists.")
-                print("Training skipped — existing valid model.")
-                return
-        except Exception:
-            pass
-            
-    print("[INFO] Loading Freihaut & Göritz keyboard stress dataset...")
-    X_train, y_train = load_data('train', batch_size)
-    X_val, y_val = load_data('val', batch_size)
-        
-    print(f"[INFO] Train samples: {len(y_train['fusion_output'])}, Val samples: {len(y_val['fusion_output'])}")
-    
-    input_shapes = {
-        'audio': (10, 169),
-        'face': (10, 12),
-        'keystroke': (10, 7),
-        'handwriting': (10, 9),
-        'eye': (10, 5)
-    }
-    
-    print("[STAGE 6] Initializing Reliability-Aware Attention Fusion Model...")
-    model = get_model('fusion', input_shapes=input_shapes, num_classes=2)
-    
-    # Calculate class weights using ONLY y_train
+
+def pick_threshold(y, prob):
+    from sklearn.metrics import balanced_accuracy_score
+    grid = np.unique(np.quantile(prob, np.linspace(0.05, 0.95, 91)))
+    scores = [balanced_accuracy_score(y, (prob >= t).astype(int)) for t in grid]
+    return float(grid[int(np.argmax(scores))])
+
+
+def trial_level(y, prob, trial):
+    """Average window probabilities per trial (secondary metric)."""
+    ids = np.unique(trial)
+    ty = np.array([y[trial == t][0] for t in ids])
+    tp = np.array([prob[trial == t].mean() for t in ids])
+    return ty, tp
+
+
+# ---------------------------------------------------------------------------
+# Candidates. Each returns (fitted_model, val_prob, save_fn)
+# ---------------------------------------------------------------------------
+
+def sklearn_candidates(cw):
+    from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    cands = []
+    for C in (0.01, 0.1, 1.0):
+        cands.append((f'logreg_C{C}', LogisticRegression(C=C, class_weight='balanced', max_iter=2000)))
+    for depth in (2, 3):
+        cands.append((f'hgb_d{depth}', HistGradientBoostingClassifier(
+            max_depth=depth, learning_rate=0.05, max_iter=200, l2_regularization=1.0,
+            min_samples_leaf=40, class_weight='balanced', random_state=SEED)))
+    for leaf in (10, 40):
+        cands.append((f'rf_leaf{leaf}', RandomForestClassifier(
+            n_estimators=400, min_samples_leaf=leaf, max_features='sqrt',
+            class_weight='balanced', n_jobs=-1, random_state=SEED)))
+    return cands
+
+
+def build_gru():
+    import tensorflow as tf
+    inp = tf.keras.Input(shape=(10, 7), name='keyboard_sequence')
+    x = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=tf.keras.regularizers.L2(1e-3))(inp)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    x = tf.keras.layers.GRU(16, kernel_regularizer=tf.keras.regularizers.L2(1e-3))(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
+    out = tf.keras.layers.Dense(1, activation='sigmoid')(x)
+    m = tf.keras.Model(inp, out, name='keyboard_gru')
+    m.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss='binary_crossentropy')
+    return m
+
+
+def train_gru(Xtr, ytr, Xva, yva, cw, epochs):
+    import tensorflow as tf
+    tf.keras.utils.set_random_seed(SEED)
+    m = build_gru()
+    m.fit(Xtr, ytr, validation_data=(Xva, yva), epochs=epochs, batch_size=64, verbose=0,
+          class_weight=cw, callbacks=[tf.keras.callbacks.EarlyStopping(
+              monitor='val_loss', patience=10, restore_best_weights=True)])
+    return m, m.predict(Xva, verbose=0).ravel()
+
+
+def fusion_inputs(Xk):
+    n = len(Xk)
+    mask = np.zeros((n, 5), np.float32)
+    mask[:, 2] = 1.0
+    return {'input_audio': np.zeros((n, 10, 169), np.float32), 'input_face': np.zeros((n, 10, 12), np.float32),
+            'input_keystroke': Xk, 'input_handwriting': np.zeros((n, 10, 9), np.float32),
+            'input_eye': np.zeros((n, 10, 5), np.float32), 'input_mask': mask}
+
+
+def train_fusion(Xtr, ytr, Xva, yva, cw, epochs):
+    """Original RA-HMSD fusion architecture, keyboard branch only (other inputs masked)."""
+    import tensorflow as tf
+    from DL_models import custom_fusion_loss, get_model
+    tf.keras.utils.set_random_seed(SEED)
+    shapes = {'audio': (10, 169), 'face': (10, 12), 'keystroke': (10, 7), 'handwriting': (10, 9), 'eye': (10, 5)}
+    m = get_model('fusion', input_shapes=shapes, num_classes=2)
+    m.compile(optimizer='adam', loss=custom_fusion_loss(class_weights=cw))
+    ydict = lambda y: {k: y for k in ('fusion_output', 'unimodal_audio', 'unimodal_face',  # noqa: E731
+                                     'unimodal_keystroke', 'unimodal_handwriting', 'unimodal_eye')}
+    m.fit(fusion_inputs(Xtr), ydict(ytr), validation_data=(fusion_inputs(Xva), ydict(yva)),
+          epochs=epochs, batch_size=64, verbose=0,
+          callbacks=[tf.keras.callbacks.EarlyStopping(monitor='val_fusion_output_loss', mode='min',
+                                                      patience=10, restore_best_weights=True)])
+    return m, m.predict(fusion_inputs(Xva), verbose=0)['fusion_output'][:, 1]
+
+
+def main(epochs, retrain):
+    meta_path = os.path.join(CP_DIR, META_FILE)
+    if os.path.exists(meta_path) and not retrain:
+        print(f"[MODEL] Trained keyboard stress model already exists ({meta_path}). Use --retrain to overwrite.")
+        return
+
+    splits = validate_preprocessing()
+    Xtr_raw, ytr, pid_tr, _ = splits['train']
+    Xva_raw, yva, pid_va, trial_va = splits['val']
+    Xte_raw, yte, pid_te, trial_te = splits['test']
+    print(f"[DATA] train={Xtr_raw.shape} ({len(set(pid_tr))} participants)  "
+          f"val={Xva_raw.shape} ({len(set(pid_va))})  test={Xte_raw.shape} ({len(set(pid_te))})")
+
+    scaler = KeyboardFeatureTransform().fit(Xtr_raw)  # TRAIN ONLY
+    Xtr, Xva = scaler.transform(Xtr_raw), scaler.transform(Xva_raw)
+    Str, Sva = summary_features(Xtr), summary_features(Xva)
+
     from sklearn.utils.class_weight import compute_class_weight
-    classes = np.unique(y_train['fusion_output'])
-    cw_arr = compute_class_weight('balanced', classes=classes, y=y_train['fusion_output'])
-    class_weights = {classes[i]: float(cw_arr[i]) for i in range(len(classes))}
-    print(f"\n[INFO] Computed Class Weights from Train: {class_weights}")
-    
-    losses = custom_fusion_loss(class_weights=class_weights)
-    model.compile(optimizer='adam', loss=losses, metrics={'fusion_output': 'accuracy'})
-    
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    hist_file = os.path.join(checkpoint_dir, 'training_history.csv')
-    latest_cp = os.path.join(checkpoint_dir, 'freihaut_keyboard_stress.keras') 
-    
-    best_cb = ModelCheckpoint(latest_cp, save_best_only=True, monitor='val_fusion_output_loss', mode='min')
-    csv_cb = CSVLogger(hist_file, append=True)
-    early_stop = EarlyStopping(monitor='val_fusion_output_loss', patience=15, restore_best_weights=True, mode='min')
-    
-    print("Starting End-to-End Training...")
-    
-    model.fit(
-        x=X_train, y=y_train,
-        validation_data=(X_val, y_val),
-        epochs=epochs,
-        batch_size=batch_size,
-        callbacks=[best_cb, csv_cb, early_stop]
-    )
-    
-    print("\n==================================================")
-    print("PHASE 5 — FINAL TEST EVALUATION")
-    print("==================================================")
-    X_test, y_test_dict = load_data('test', batch_size)
-    y_test = y_test_dict['fusion_output']
-    
-    predictions = model.predict(X_test)
-    y_pred_probs = predictions['fusion_output']
-    y_pred_classes = np.argmax(y_pred_probs, axis=1)
-    
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
-    
-    acc = accuracy_score(y_test, y_pred_classes)
-    prec = precision_score(y_test, y_pred_classes, zero_division=0)
-    rec = recall_score(y_test, y_pred_classes, zero_division=0)
-    f1 = f1_score(y_test, y_pred_classes, zero_division=0)
-    try:
-        roc_auc = roc_auc_score(y_test, y_pred_probs[:, 1])
-    except:
-        roc_auc = 0.5
-        
-    cm = confusion_matrix(y_test, y_pred_classes)
-    
-    majority_class = np.argmax(np.bincount(y_test))
-    majority_preds = np.full_like(y_test, majority_class)
-    majority_acc = accuracy_score(y_test, majority_preds)
-    
-    print(f"\nTest Samples: {len(y_test)}")
-    print(f"Stress (1): {np.sum(y_test == 1)}")
-    print(f"Non-Stress (0): {np.sum(y_test == 0)}")
-    print(f"\nConfusion Matrix:\n{cm}")
-    
-    # Save metadata
-    save_training_metadata(checkpoint_dir, input_shapes, len(y_train['fusion_output']), len(y_val['fusion_output']), len(y_test), acc, prec, rec, f1, roc_auc)
-    
-    print("\n==================================================")
-    print("FINAL TERMINAL SUMMARY")
-    print("==================================================")
-    print("DATASET:")
-    print("TRAIN PARTICIPANTS: 744")
-    print("VAL PARTICIPANTS: 159")
-    print("TEST PARTICIPANTS: 161")
-    print(f"TRAIN WINDOWS: {len(y_train['fusion_output'])}")
-    print(f"VAL WINDOWS: {len(y_val['fusion_output'])}")
-    print(f"TEST WINDOWS: {len(y_test)}")
-    print("\nMODEL:")
-    print("CHECKPOINT: results/checkpoints/freihaut_keyboard_stress.keras")
-    print(f"\nTEST ACCURACY: {acc:.4f}")
-    print(f"TEST PRECISION: {prec:.4f}")
-    print(f"TEST RECALL: {rec:.4f}")
-    print(f"TEST F1: {f1:.4f}")
-    print(f"TEST ROC-AUC: {roc_auc:.4f}")
-    print(f"\nMAJORITY BASELINE: {majority_acc:.4f}")
-    print("\nFINAL STATUS:")
-    print("SUCCESS")
+    w = compute_class_weight('balanced', classes=np.array([0, 1]), y=ytr)
+    cw = {0: float(w[0]), 1: float(w[1])}
+    print(f"[DATA] class weights (train): {cw}")
 
-def save_training_metadata(checkpoint_dir, input_shapes, train_n, val_n, test_n, acc, prec, rec, f1, roc_auc):
-    metadata = {
-        "dataset_name": "Freihaut & Göritz (2021)",
-        "model_architecture": "fusion",
-        "is_trained": True,
-        "is_prototype": False,
-        "trained_modalities": ["keyboard"],
-        "training_timestamp": datetime.datetime.now().isoformat(),
-        "expected_input_shapes": {k: list(v) for k, v in input_shapes.items()},
-        "expected_output_shape": [2],
-        "modality_order": ["audio", "face", "keystroke", "handwriting", "eye"],
-        "class_mapping": {"0": "NON-STRESS", "1": "STRESS"},
-        "train_participants": 744,
-        "validation_participants": 159,
-        "test_participants": 161,
-        "train_samples": train_n,
-        "validation_samples": val_n,
-        "test_samples": test_n,
-        "test_metrics": {
-            "accuracy": float(acc),
-            "precision": float(prec),
-            "recall": float(rec),
-            "f1": float(f1),
-            "roc_auc": float(roc_auc)
-        }
+    # ---- majority baseline (majority class of TRAIN) ------------------------
+    maj = int(np.bincount(ytr).argmax())
+    results = {}
+
+    # ---- candidates, validation only ----------------------------------------
+    fitted = {}
+    for name, model in sklearn_candidates(cw):
+        model.fit(Str, ytr)
+        p = model.predict_proba(Sva)[:, 1]
+        fitted[name] = (model, p, 'summary', 'joblib')
+    m, p = train_gru(Xtr, ytr, Xva, yva, cw, epochs)
+    fitted['gru_sequence'] = (m, p, 'sequence', 'keras')
+    m, p = train_fusion(Xtr, ytr, Xva, yva, cw, epochs)
+    fitted['fusion_keyboard_only'] = (m, p, 'sequence', 'fusion_weights')
+
+    from sklearn.metrics import roc_auc_score
+    print("\n[VALIDATION] model selection (ROC-AUC, balanced accuracy @ val-tuned threshold)")
+    for name, (_, p, _, _) in fitted.items():
+        thr = pick_threshold(yva, p)
+        results[name] = {'val_roc_auc': float(roc_auc_score(yva, p)), 'val_threshold': thr,
+                         'val_balanced_accuracy': metrics(yva, p, thr)['balanced_accuracy']}
+        print(f"  {name:22s} AUC={results[name]['val_roc_auc']:.4f}  "
+              f"balAcc={results[name]['val_balanced_accuracy']:.4f}  thr={thr:.3f}")
+    best = max(results, key=lambda n: results[n]['val_roc_auc'])
+    model, pva, input_kind, fmt = fitted[best]
+    thr = results[best]['val_threshold']
+    print(f"\n[SELECTED] {best} (by validation ROC-AUC)")
+
+    # ---- single evaluation on untouched TEST --------------------------------
+    Xte = scaler.transform(Xte_raw)
+    if fmt == 'joblib':
+        pte = model.predict_proba(summary_features(Xte))[:, 1]
+    elif fmt == 'keras':
+        pte = model.predict(Xte, verbose=0).ravel()
+    else:
+        pte = model.predict(fusion_inputs(Xte), verbose=0)['fusion_output'][:, 1]
+    test = metrics(yte, pte, thr)
+    test_default = metrics(yte, pte, 0.5)
+    ty, tp = trial_level(yte, pte, trial_te)
+    test_trial = metrics(ty, tp, thr)
+    majority = metrics(yte, np.full(len(yte), float(maj)), 0.5)
+    majority['roc_auc'] = 0.5
+    majority['predicted_class'] = maj
+
+    # ---- save ----------------------------------------------------------------
+    os.makedirs(CP_DIR, exist_ok=True)
+    model_file = {'joblib': 'keyboard_stress_model.joblib', 'keras': 'keyboard_stress_model.keras',
+                  'fusion_weights': 'keyboard_stress_fusion.weights.h5'}[fmt]
+    if fmt == 'joblib':
+        import joblib
+        joblib.dump(model, os.path.join(CP_DIR, model_file))
+    elif fmt == 'keras':
+        model.save(os.path.join(CP_DIR, model_file))
+    else:
+        model.save_weights(os.path.join(CP_DIR, model_file))
+    with open(os.path.join(CP_DIR, SCALER_FILE), 'w') as f:
+        json.dump(scaler.to_dict(), f, indent=2)
+
+    meta = {
+        'dataset_name': 'Freihaut & Goeritz (2021) keyboard stress',
+        'is_trained': True,
+        'is_prototype': False,
+        'trained_modalities': ['keyboard'],
+        'model_name': best,
+        'model_format': fmt,
+        'model_file': model_file,
+        'scaler_file': SCALER_FILE,
+        'input_kind': input_kind,
+        'input_shape': [10, 7],
+        'feature_names': FEATURE_NAMES,
+        'feature_notes': 'error_rate is not observable in free typing and is zeroed for training and runtime',
+        'keystrokes_per_subwindow': KEYSTROKES_PER_SUBWINDOW,
+        'decision_threshold': thr,
+        'threshold_selection': 'validation split, max balanced accuracy',
+        'selection_metric': 'validation ROC-AUC',
+        'class_mapping': {'0': 'NON-STRESS', '1': 'STRESS'},
+        'class_weights_train': cw,
+        'training_timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+        'participants': {'train': len(set(pid_tr)), 'val': len(set(pid_va)), 'test': len(set(pid_te))},
+        'windows': {'train': int(len(ytr)), 'val': int(len(yva)), 'test': int(len(yte))},
+        'validation_candidates': results,
+        'test_metrics': test,
+        'test_metrics_threshold_0_5': test_default,
+        'test_metrics_trial_level': test_trial,
+        'majority_baseline_test': majority,
     }
-    meta_path = os.path.join(checkpoint_dir, 'training_metadata.json')
-    with open(meta_path, 'w') as f:
-        json.dump(metadata, f, indent=4)
-    return meta_path
+    with open(os.path.join(CP_DIR, META_FILE), 'w') as f:
+        json.dump(meta, f, indent=2)
+    with open(os.path.join(ROOT, 'results', 'final_evaluation.json'), 'w') as f:
+        json.dump({k: meta[k] for k in ('model_name', 'decision_threshold', 'participants', 'windows',
+                                        'validation_candidates', 'test_metrics', 'test_metrics_threshold_0_5',
+                                        'test_metrics_trial_level', 'majority_baseline_test')}, f, indent=2)
+
+    print("\n" + "=" * 60)
+    print("FINAL TEST EVALUATION (untouched test split, evaluated once)")
+    print("=" * 60)
+    print(f"MODEL: {best}   threshold={thr:.3f}")
+    for k in ('accuracy', 'balanced_accuracy', 'precision', 'recall', 'f1', 'roc_auc'):
+        print(f"TEST {k.upper():18s}: {test[k]:.4f}")
+    print(f"CONFUSION MATRIX [[TN FP][FN TP]]: {test['confusion_matrix']}")
+    print(f"TRIAL-LEVEL  acc={test_trial['accuracy']:.4f}  balAcc={test_trial['balanced_accuracy']:.4f}  "
+          f"AUC={test_trial['roc_auc']:.4f}  (n={test_trial['n']} trials)")
+    print(f"MAJORITY BASELINE (class {maj}): acc={majority['accuracy']:.4f}  balAcc={majority['balanced_accuracy']:.4f}")
+    print(f"Saved: {os.path.join(CP_DIR, model_file)}, {SCALER_FILE}, {META_FILE}")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--validate-data", action="store_true", help="Run structural validation")
-    parser.add_argument("--retrain", action="store_true", help="Explicitly overwrite existing trained model")
-    args = parser.parse_args()
-    
-    if args.validate_data:
-        print("[OK] Validation simulated.")
-    else:
-        train_fusion(args.epochs, args.batch_size, args.retrain)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--epochs", type=int, default=150)
+    ap.add_argument("--retrain", action="store_true", help="Overwrite existing trained model")
+    args = ap.parse_args()
+    main(args.epochs, args.retrain)

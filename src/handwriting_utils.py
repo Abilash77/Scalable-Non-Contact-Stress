@@ -1,12 +1,14 @@
 import cv2
 import numpy as np
 
-def extract_handwriting_features(img_path=None, img_array=None):
+def extract_handwriting_features(img_path=None, img_array=None, strokes=None):
     """
     Extracts geometric, stylistic, and morphological features from handwriting.
     Features: Stroke Width, Curvature/Slant, Density, Aspect Ratio.
-    Also extracts Pen Pressure (proxy via intensity) and returns placeholders
-    for velocity and timing if temporal data is absent.
+    Also extracts Pen Pressure (proxy via intensity). When the real canvas
+    strokes are supplied (list of strokes, each a list of {x, y, t} with t in
+    ms), stroke velocity (px/ms, pen down) and timing ratio (pen-down time /
+    total writing time) are computed from them; otherwise they are 0.
     Total 9 features.
     """
     if img_array is None and img_path is not None:
@@ -81,9 +83,8 @@ def extract_handwriting_features(img_path=None, img_array=None):
     else:
         pressure_proxy = 0.0
         
-    # 5. Temporal Features (Placeholders for static images)
-    stroke_velocity = 0.0
-    timing_ratio = 0.0
+    # 5. Temporal features from real canvas strokes (0 for static images)
+    stroke_velocity, timing_ratio = stroke_timing_features(strokes)
     
     features = np.array([
         stroke_width_mean,
@@ -98,3 +99,25 @@ def extract_handwriting_features(img_path=None, img_array=None):
     ], dtype=np.float32)
     
     return features
+
+
+def stroke_timing_features(strokes):
+    """(mean pen-down velocity px/ms, pen-down time / total writing time)."""
+    if not strokes:
+        return 0.0, 0.0
+    dist = down_ms = 0.0
+    starts, ends = [], []
+    for stroke in strokes:
+        pts = [p for p in stroke if isinstance(p, dict) and all(k in p for k in ('x', 'y', 't'))]
+        if len(pts) < 2:
+            continue
+        xy = np.array([[p['x'], p['y']] for p in pts], dtype=np.float64)
+        t = np.array([p['t'] for p in pts], dtype=np.float64)
+        dist += float(np.sum(np.linalg.norm(np.diff(xy, axis=0), axis=1)))
+        down_ms += float(t[-1] - t[0])
+        starts.append(t[0])
+        ends.append(t[-1])
+    if down_ms <= 0 or not starts:
+        return 0.0, 0.0
+    total_ms = max(ends) - min(starts)
+    return dist / down_ms, (down_ms / total_ms) if total_ms > 0 else 1.0

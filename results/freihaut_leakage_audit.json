@@ -1,9 +1,21 @@
 {
-  "participant_leakage": false,
-  "session_leakage": false,
-  "duplicate_windows": false,
-  "identical_feature_vectors": false,
-  "label_distribution_valid": true,
-  "details": {},
+  "within_split_duplicates_removed": {
+    "train": 0,
+    "val": 0,
+    "test": 0
+  },
+  "cross_split_duplicates_removed": {
+    "train": 0,
+    "val": 0,
+    "test": 0
+  },
+  "participant_overlap": {
+    "train_val": 0,
+    "train_test": 0,
+    "val_test": 0
+  },
+  "trial_overlap": 0,
+  "synthetic_samples": 0,
+  "normalization": "none in preprocessing; scaler fitted on train split only in train.py",
   "PASS": true
 }

@@ -1,17 +1,138 @@
 {
-  "dataset": "Keystroke-Stress",
-  "modalities_used": ["keystroke"],
-  "model_architecture": "fusion",
-  "metrics": {
-    "val_accuracy": 1.0,
-    "val_fusion_loss": 0.0356,
-    "train_accuracy": 1.0,
-    "train_fusion_loss": 0.0342
+  "model_name": "rf_leaf40",
+  "decision_threshold": 0.4403923982483365,
+  "participants": {
+    "train": 745,
+    "val": 159,
+    "test": 159
   },
-  "training_parameters": {
-    "epochs": 10,
-    "optimizer": "adam",
-    "loss_weights": "fusion=1.0, unimodal=0.1"
+  "windows": {
+    "train": 2365,
+    "val": 504,
+    "test": 493
   },
-  "notes": "Trained on real keystroke-stress data containing flight and dwell time dynamics aligned with PAM self-reported stress labels. Replaces the legacy DriveDB fallback."
+  "validation_candidates": {
+    "logreg_C0.01": {
+      "val_roc_auc": 0.44450920776949865,
+      "val_threshold": 0.4209300860762596,
+      "val_balanced_accuracy": 0.5029458561098946
+    },
+    "logreg_C0.1": {
+      "val_roc_auc": 0.4349627435844926,
+      "val_threshold": 0.39124416410923,
+      "val_balanced_accuracy": 0.5148553064793081
+    },
+    "logreg_C1.0": {
+      "val_roc_auc": 0.4369318987381654,
+      "val_threshold": 0.37680103778839114,
+      "val_balanced_accuracy": 0.5188251232691127
+    },
+    "hgb_d2": {
+      "val_roc_auc": 0.47119519841207325,
+      "val_threshold": 0.5556442180144361,
+      "val_balanced_accuracy": 0.5111375415491738
+    },
+    "hgb_d3": {
+      "val_roc_auc": 0.4433434679185242,
+      "val_threshold": 0.6920585415098863,
+      "val_balanced_accuracy": 0.49744797492084
+    },
+    "rf_leaf10": {
+      "val_roc_auc": 0.4918634509050237,
+      "val_threshold": 0.3945888373500605,
+      "val_balanced_accuracy": 0.5359173900029931
+    },
+    "rf_leaf40": {
+      "val_roc_auc": 0.5126892358102679,
+      "val_threshold": 0.4403923982483365,
+      "val_balanced_accuracy": 0.5267962633311805
+    },
+    "gru_sequence": {
+      "val_roc_auc": 0.4993304872477512,
+      "val_threshold": 0.5589726382493972,
+      "val_balanced_accuracy": 0.529206509239276
+    },
+    "fusion_keyboard_only": {
+      "val_roc_auc": 0.49183194442256495,
+      "val_threshold": 0.5592280793190002,
+      "val_balanced_accuracy": 0.5250240236928748
+    }
+  },
+  "test_metrics": {
+    "accuracy": 0.5456389452332657,
+    "balanced_accuracy": 0.5435347949173744,
+    "precision": 0.5358166189111748,
+    "recall": 0.751004016064257,
+    "f1": 0.6254180602006689,
+    "roc_auc": 0.5538218447560734,
+    "confusion_matrix": [
+      [
+        82,
+        162
+      ],
+      [
+        62,
+        187
+      ]
+    ],
+    "n": 493
+  },
+  "test_metrics_threshold_0_5": {
+    "accuracy": 0.5415821501014199,
+    "balanced_accuracy": 0.542193363618408,
+    "precision": 0.5529953917050692,
+    "recall": 0.4819277108433735,
+    "f1": 0.5150214592274678,
+    "roc_auc": 0.5538218447560734,
+    "confusion_matrix": [
+      [
+        147,
+        97
+      ],
+      [
+        129,
+        120
+      ]
+    ],
+    "n": 493
+  },
+  "test_metrics_trial_level": {
+    "accuracy": 0.5269461077844312,
+    "balanced_accuracy": 0.5305595408895265,
+    "precision": 0.5128205128205128,
+    "recall": 0.7317073170731707,
+    "f1": 0.6030150753768844,
+    "roc_auc": 0.5332855093256815,
+    "confusion_matrix": [
+      [
+        28,
+        57
+      ],
+      [
+        22,
+        60
+      ]
+    ],
+    "n": 167
+  },
+  "majority_baseline_test": {
+    "accuracy": 0.4949290060851927,
+    "balanced_accuracy": 0.5,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0,
+    "roc_auc": 0.5,
+    "confusion_matrix": [
+      [
+        244,
+        0
+      ],
+      [
+        249,
+        0
+      ]
+    ],
+    "n": 493,
+    "predicted_class": 0
+  }
 }

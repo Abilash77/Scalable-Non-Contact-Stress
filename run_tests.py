@@ -495,6 +495,7 @@ print("\n[Test 16] Test API /status Extended...")
 try:
     client = app.test_client()
     manager_dict['face_status'] = 'NO_FACE_DETECTED'
+    manager_dict['last_frame_timestamp'] = time.time()  # a fresh frame; stale frames report WAITING_FOR_CAMERA
     res = client.get('/status')
     data = res.get_json()
     assert data['face_status'] == 'NO_FACE_DETECTED'
@@ -503,6 +504,33 @@ try:
 except Exception as e:
     print(f"[FAIL] API /status Extended failed: {e}")
     results['Test 16: API /status Extended'] = 'FAIL'
+
+# ---------------------------------------------------------
+# Test 17: Keyboard stress model + runtime feature parity
+# ---------------------------------------------------------
+print("\n[Test 17] Keyboard stress model (real test split) and runtime feature parity...")
+try:
+    from keyboard_stress_features import KeyboardStressPredictor
+    from sklearn.metrics import roc_auc_score
+    predictor = KeyboardStressPredictor()
+    X_te = np.load('data/processed/freihaut/X_test.npy')
+    y_te = np.load('data/processed/freihaut/y_test.npy')
+    auc = roc_auc_score(y_te, predictor.predict_proba(X_te))
+    assert abs(auc - predictor.meta['test_metrics']['roc_auc']) < 1e-6, "checkpoint does not reproduce saved test AUC"
+    # Browser events: 4 keystrokes, 100 ms dwell, 200 ms flight -> ms-based features like the dataset
+    ev, t = [], 1000.0
+    for i, (k, c) in enumerate([('a', 'KeyA'), ('b', 'KeyB'), ('Backspace', 'Backspace'), ('c', 'KeyC')]):
+        ev.append({'event_id': 2 * i, 'key': k, 'code': c, 'action': 'press', 'time': t})
+        ev.append({'event_id': 2 * i + 1, 'key': k, 'code': c, 'action': 'release', 'time': t + 0.1})
+        t += 0.3
+    f = extract_keystroke_features(ev)
+    assert np.allclose(f[:4], [100, 0, 200, 0], atol=1e-2), f
+    assert abs(f[4] - 4.0) < 1e-3 and abs(f[5] - 0.25) < 1e-6 and f[6] == 0, f
+    print(f"[PASS] test AUC reproduced ({auc:.4f}); runtime 7D features = {np.round(f, 2).tolist()}")
+    results['Test 17: Keyboard Model + Feature Parity'] = 'PASS'
+except Exception as e:
+    print(f"[FAIL] Keyboard model / parity: {e}")
+    results['Test 17: Keyboard Model + Feature Parity'] = 'FAIL'
 
 print("\n==================================================")
 print("FINAL TEST RESULTS")

@@ -1,67 +1,27 @@
 import numpy as np
 
+from keyboard_stress_features import (
+    KEYSTROKES_PER_SUBWINDOW, browser_events_to_raw, compute_subwindow_features, events_to_pairs,
+)
+
+
 def extract_keystroke_features(events):
     """
-    Extracts keystroke dynamics and cognitive load proxies from event sequence.
-    Features: dwell_mean, dwell_std, flight_mean, flight_std, typing_speed,
-              pause_rate, correction_rate
+    7D keyboard features of the most recent complete 4-keystroke sub-window,
+    computed with exactly the same code as the Freihaut training data
+    (src/keyboard_stress_features.py).
+
+    events: [{'key', 'code' (optional), 'action': 'press'|'release', 'time': seconds}]
+    Features: mean_dwell, std_dwell, mean_flight, std_flight (ms),
+              typing_speed (keys/s), backspace_freq, error_rate (always 0 at runtime)
+    Returns zeros when fewer than 4 complete keystrokes are available.
     """
     if not events:
-        return np.zeros(7)
-        
-    press_times = {}
-    dwell_times = []
-    flight_times = []
-    
-    last_press_time = None
-    pauses = 0
-    corrections = 0
-    PAUSE_THRESHOLD = 1.0 # seconds
-    
-    for event in events:
-        key = event['key']
-        action = event['action']
-        t = event['time']
-        
-        # Track corrections (Backspace, Delete)
-        if action == 'press' and key in ['Key.backspace', 'Key.delete']:
-            corrections += 1
-            
-        if action == 'press':
-            if key not in press_times:
-                press_times[key] = t
-            if last_press_time is not None:
-                flight = t - last_press_time
-                flight_times.append(flight)
-                if flight > PAUSE_THRESHOLD:
-                    pauses += 1
-            last_press_time = t
-            
-        elif action == 'release':
-            if key in press_times:
-                dwell_times.append(t - press_times[key])
-                del press_times[key]
-                
-    total_events = len([e for e in events if e['action'] == 'press'])
-    duration = events[-1]['time'] - events[0]['time'] if len(events) > 1 else 0
-    
-    dwell_mean = np.mean(dwell_times) if dwell_times else 0.0
-    dwell_std = np.std(dwell_times) if dwell_times else 0.0
-    flight_mean = np.mean(flight_times) if flight_times else 0.0
-    flight_std = np.std(flight_times) if flight_times else 0.0
-    typing_speed = total_events / duration if duration > 0 else 0.0
-    
-    pause_rate = pauses / total_events if total_events > 0 else 0.0
-    correction_rate = corrections / total_events if total_events > 0 else 0.0
-    
-    features = np.array([
-        dwell_mean,
-        dwell_std,
-        flight_mean,
-        flight_std,
-        typing_speed,
-        pause_rate,
-        correction_rate
-    ], dtype=np.float32)
-    
-    return features
+        return np.zeros(7, dtype=np.float32)
+    pairs = events_to_pairs(browser_events_to_raw(events))
+    n_full = (len(pairs) // KEYSTROKES_PER_SUBWINDOW) * KEYSTROKES_PER_SUBWINDOW
+    for end in range(n_full, 0, -KEYSTROKES_PER_SUBWINDOW):
+        feats = compute_subwindow_features(pairs[end - KEYSTROKES_PER_SUBWINDOW:end])
+        if feats is not None:
+            return feats
+    return np.zeros(7, dtype=np.float32)
