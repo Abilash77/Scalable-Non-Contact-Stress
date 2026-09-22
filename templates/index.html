@@ -119,6 +119,13 @@
         .chat-form input { min-width: 0; flex: 1; padding: 10px; border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; background: #fff; color: #111; }
         .chat-form button { flex: 0 0 auto; padding: 10px 13px; background: var(--accent-green); }
         @media (max-width: 520px) { .chatbot-launcher { right: 16px; bottom: 16px; } .chatbot-panel { right: 16px; bottom: 82px; width: calc(100vw - 32px); height: min(620px, calc(100vh - 105px)); } }
+        .pdf-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center; }
+        .pdf-modal-content { background: var(--panel-bg); padding: 30px; border-radius: 8px; width: 500px; max-width: 90%; text-align: center; border: 1px solid var(--accent-cyan); box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .pdf-modal h2 { color: var(--accent-cyan); margin-bottom: 20px; }
+        .pdf-modal p { margin-bottom: 10px; color: var(--text-primary); }
+        .pdf-actions { display: flex; gap: 15px; margin-top: 25px; justify-content: center; }
+        .pdf-actions a, .pdf-actions button { padding: 10px 20px; border-radius: 4px; text-decoration: none; font-weight: bold; cursor: pointer; color: #fff; background: var(--accent-green); border: none; font-size: 14px; display: inline-block; }
+        .pdf-actions button.btn-close { background: var(--status-neutral); }
     </style>
 </head>
 <body>
@@ -190,30 +197,42 @@
             </div>
 
             <div class="panel">
-                <div class="panel-header"><span>CURRENT STATE</span></div>
+                <div class="panel-header">
+                    <span>CURRENT STRESS STATE</span>
+                    <span style="font-size:0.8em; color:var(--status-amber);">(RESEARCH / NOT CLINICALLY VALIDATED)</span>
+                </div>
                 <div class="panel-body">
-                    <div class="analysis-state">
-                        <div style="color:var(--text-secondary); font-size:0.9em; text-transform:uppercase;">Current State</div>
-                        <div class="current-state status-neutral" id="current-state">INITIALIZING</div>
+                    <div class="analysis-state" style="padding: 10px; margin-bottom: 15px;">
+                        <div style="color:var(--text-secondary); font-size:0.9em; text-transform:uppercase;">Primary Prediction (Camera)</div>
+                        <div class="current-state status-neutral" id="primary-state">INITIALIZING</div>
                     </div>
-                    <div class="prob-grid" id="prob-grid" style="display:none;">
+                    <div class="prob-grid" id="primary-prob-grid" style="display:none;">
                         <div class="prob-box">
-                            <div class="label">Stress</div>
-                            <div class="pct status-red" id="stress-pct">—</div>
+                            <div class="label">Stress Score</div>
+                            <div class="pct status-red" id="primary-stress-pct">—</div>
                         </div>
                         <div class="prob-box">
-                            <div class="label">Non-Stress</div>
-                            <div class="pct status-green" id="nonstress-pct">—</div>
+                            <div class="label">Non-Stress Score</div>
+                            <div class="pct status-green" id="primary-nonstress-pct">—</div>
                         </div>
+                    </div>
+                    <div class="analysis-details" style="margin-bottom: 10px;">
+                        <div class="detail-row"><span>Prediction Source</span><span style="font-weight:bold;" id="prediction-source-label">CAMERA STRESS ESTIMATE (RESEARCH)</span></div>
+                        <div class="detail-row"><span>Confidence</span><span id="primary-confidence" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Last Updated</span><span id="primary-updated" style="font-weight:bold;">—</span></div>
+                    </div>
+                    
+                    <hr style="border:0; border-top:1px solid rgba(255,255,255,0.1); margin:10px 0;">
+                    
+                    <div class="analysis-state" style="padding:10px; margin-bottom:10px;">
+                        <div style="color:var(--text-secondary); font-size:0.8em; text-transform:uppercase;">Secondary Signal (Keyboard)</div>
+                        <div class="current-state status-neutral" id="secondary-state" style="font-size:1.2em; margin-top:5px;">WAITING</div>
                     </div>
                     <div class="analysis-details">
-                        <div class="detail-row"><span>Model</span><span id="detail-model" style="font-weight:bold;">—</span></div>
-                        <div class="detail-row"><span>Status</span><span id="detail-status" style="font-weight:bold; font-size: 0.9em; color: var(--text-muted);">—</span></div>
-                        <div class="detail-row"><span>Inference</span><span id="detail-inference" style="font-weight:bold;">—</span></div>
-                        <div class="detail-row"><span>Stress prediction source</span><span id="detail-prediction-source" style="font-weight:bold;">Keyboard</span></div>
-                        <div class="detail-row"><span>Prediction</span><span id="detail-prediction" style="font-weight:bold;">—</span></div>
-                        <div class="detail-row"><span>Confidence</span><span id="detail-confidence" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Keyboard Stress Prob</span><span id="secondary-stress-pct" style="font-weight:bold;">—</span></div>
+                        <div class="detail-row"><span>Keyboard Confidence</span><span id="secondary-confidence" style="font-weight:bold;">—</span></div>
                     </div>
+                    
                     <div class="controls">
                         <button class="btn-start" onclick="sendControl('start')">START MONITORING</button>
                         <button class="btn-stop" onclick="sendControl('stop')">STOP</button>
@@ -260,39 +279,6 @@
             </div>
         </div>
 
-        <div class="panel how-inputs-panel">
-            <div class="panel-header"><span>HOW THE INPUTS WORK</span></div>
-            <div class="panel-body">
-                <div class="how-inputs-grid">
-                    <div class="how-input-item">
-                        <h4>KEYBOARD INPUT — TYPING DYNAMICS</h4>
-                        <p>The dedicated input box records typing behavior, not the meaning of the sentence: key press and release timing, dwell time, time between keystrokes, and typing rhythm.</p>
-                        <div class="how-input-flow">REAL KEYBOARD &rarr; TYPING DYNAMICS &rarr; 7D FEATURES &rarr; 10 TEMPORAL SAMPLES &rarr; FREIHAUT STRESS MODEL &rarr; STRESS / NON-STRESS</div>
-                    </div>
-                    <div class="how-input-item">
-                        <h4>HANDWRITING INPUT — WRITING BEHAVIOR</h4>
-                        <p>Write naturally with a mouse, touchpad, touchscreen, or stylus. Real strokes are used for stroke width, slant, density, aspect ratio, and intensity/pressure proxy features.</p>
-                        <div class="how-input-flow">REAL HANDWRITING &rarr; STROKE DATA / IMAGE &rarr; 9D FEATURES &rarr; TEMPORAL BUFFER &rarr; HANDWRITING FEATURE SIGNAL</div>
-                        <p>Currently used for real handwriting feature extraction; not a validated stress predictor.</p>
-                    </div>
-                    <div class="how-input-item">
-                        <h4>FACIAL</h4>
-                        <p>The visitor's real camera is processed for face detection and facial features with a FER emotion signal. FER-2013 is not a stress model.</p>
-                        <div class="how-input-flow">REAL CAMERA &rarr; FACE DETECTION &rarr; FACIAL FEATURES / FER EMOTION SIGNAL</div>
-                    </div>
-                    <div class="how-input-item">
-                        <h4>EYE / PUPIL</h4>
-                        <p>The same real camera supplies face and eye landmarks for the 5D eye feature vector. These features do not independently predict stress.</p>
-                        <div class="how-input-flow">REAL CAMERA &rarr; EYE / LANDMARK DETECTION &rarr; 5D EYE FEATURES</div>
-                    </div>
-                    <div class="how-input-item">
-                        <h4>SPEECH</h4>
-                        <p>The visitor speaks naturally into the real microphone. The existing extractor computes audio features; this is not a RAVDESS stress model.</p>
-                        <div class="how-input-flow">REAL MICROPHONE &rarr; AUDIO FEATURE EXTRACTION &rarr; 169D AUDIO FEATURES</div>
-                    </div>
-                </div>
-            </div>
-        </div>
 
         <div class="panel keyboard-input-panel">
             <div class="panel-header"><span>KEYBOARD INPUT</span><span id="keyboard-ready-status" style="color: var(--status-neutral);">WAITING</span></div>
@@ -353,7 +339,42 @@
                 </div>
             </div>
         </div>
+        <div class="panel how-inputs-panel" style="margin-bottom: 100px;">
+            <div class="panel-header"><span>HOW THE INPUTS WORK</span></div>
+            <div class="panel-body">
+                <div class="how-inputs-grid">
+                    <div class="how-input-item">
+                        <h4>KEYBOARD INPUT — TYPING DYNAMICS</h4>
+                        <p>The dedicated input box records typing behavior, not the meaning of the sentence: key press and release timing, dwell time, time between keystrokes, and typing rhythm.</p>
+                        <div class="how-input-flow">REAL KEYBOARD &rarr; TYPING DYNAMICS &rarr; 7D FEATURES &rarr; 10 TEMPORAL SAMPLES &rarr; FREIHAUT STRESS MODEL &rarr; STRESS / NON-STRESS</div>
+                    </div>
+                    <div class="how-input-item">
+                        <h4>HANDWRITING INPUT — WRITING BEHAVIOR</h4>
+                        <p>Write naturally with a mouse, touchpad, touchscreen, or stylus. Real strokes are used for stroke width, slant, density, aspect ratio, and intensity/pressure proxy features.</p>
+                        <div class="how-input-flow">REAL HANDWRITING &rarr; STROKE DATA / IMAGE &rarr; 9D FEATURES &rarr; TEMPORAL BUFFER &rarr; HANDWRITING FEATURE SIGNAL</div>
+                        <p>Currently used for real handwriting feature extraction; not a validated stress predictor.</p>
+                    </div>
+                    <div class="how-input-item">
+                        <h4>FACIAL</h4>
+                        <p>The visitor's real camera is processed for face detection and facial features with a FER emotion signal. FER-2013 is not a stress model.</p>
+                        <div class="how-input-flow">REAL CAMERA &rarr; FACE DETECTION &rarr; FACIAL FEATURES / FER EMOTION SIGNAL</div>
+                    </div>
+                    <div class="how-input-item">
+                        <h4>EYE / PUPIL</h4>
+                        <p>The same real camera supplies face and eye landmarks for the 5D eye feature vector. These features do not independently predict stress.</p>
+                        <div class="how-input-flow">REAL CAMERA &rarr; EYE / LANDMARK DETECTION &rarr; 5D EYE FEATURES</div>
+                    </div>
+                    <div class="how-input-item">
+                        <h4>SPEECH</h4>
+                        <p>The visitor speaks naturally into the real microphone. The existing extractor computes audio features; this is not a RAVDESS stress model.</p>
+                        <div class="how-input-flow">REAL MICROPHONE &rarr; AUDIO FEATURE EXTRACTION &rarr; 169D AUDIO FEATURES</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
     </div>
+
 
     <button id="chatbot-launcher" class="chatbot-launcher" aria-label="Open project assistant" title="Open project assistant"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11.5a8 8 0 0 1-8 8H6l-3 2v-5.2a8 8 0 1 1 17-4.8Z"></path><path d="M8 10h.01M12 10h.01M16 10h.01"></path></svg></button>
     <section id="chatbot-panel" class="chatbot-panel" aria-label="Project assistant" aria-hidden="true">
@@ -377,6 +398,19 @@
             <button type="submit">Send</button>
         </form>
     </section>
+
+    <!-- PDF Modal -->
+    <div id="pdf-modal" class="pdf-modal">
+        <div class="pdf-modal-content">
+            <h2>SESSION REPORT READY</h2>
+            <p id="pdf-summary-status">Final Prediction: ...</p>
+            <div class="pdf-actions">
+                <a id="pdf-view-btn" href="#" target="_blank">VIEW PDF</a>
+                <a id="pdf-download-btn" href="#" download>DOWNLOAD PDF</a>
+                <button class="btn-close" onclick="document.getElementById('pdf-modal').style.display='none'">CLOSE</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         const chatbotLauncher = document.getElementById('chatbot-launcher');
@@ -469,11 +503,22 @@
         }
         hwCanvas.addEventListener('mousedown', e => { drawing = true; const p = canvasPos(e); hwStrokes.push([hwPoint(p)]); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
         hwCanvas.addEventListener('mousemove', e => { if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
-        hwCanvas.addEventListener('mouseup', () => drawing = false);
-        hwCanvas.addEventListener('mouseleave', () => drawing = false);
+        hwCanvas.addEventListener('mouseup', () => { drawing = false; checkAutoSubmit(); });
+        hwCanvas.addEventListener('mouseleave', () => { drawing = false; checkAutoSubmit(); });
         hwCanvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = canvasPos(e); hwStrokes.push([hwPoint(p)]); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
         hwCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
-        hwCanvas.addEventListener('touchend', () => drawing = false);
+        hwCanvas.addEventListener('touchend', () => { drawing = false; checkAutoSubmit(); });
+        
+        function checkAutoSubmit() {
+            if (hwStrokes.length >= 4) {
+                // Short timeout to let the user finish their gesture if they're still drawing
+                setTimeout(() => {
+                    if (!drawing && hwStrokes.length >= 4) {
+                        submitHandwriting();
+                    }
+                }, 1000);
+            }
+        }
 
         function clearCanvasOnly() {
             hwCtx.fillStyle = '#fff';
@@ -635,7 +680,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action }),
                 signal: controller.signal
-            }).then(() => {
+            }).then(r => r.json()).then((res) => {
                 clearTimeout(id);
                 if (action === 'start') {
                     addLog('Monitoring started');
@@ -644,6 +689,12 @@
                 if (action === 'stop') {
                     addLog('Monitoring stopped');
                     stopRemoteCapture();
+                    if (res.report_url) {
+                        document.getElementById('pdf-view-btn').href = res.report_url;
+                        document.getElementById('pdf-download-btn').href = res.report_url;
+                        document.getElementById('pdf-summary-status').innerText = 'Final Prediction: ' + (res.session_info ? res.session_info.final_prediction : 'N/A');
+                        document.getElementById('pdf-modal').style.display = 'flex';
+                    }
                 }
                 if (action === 'reset') {
                     clearCanvasOnly();
@@ -691,20 +742,24 @@
                     localMediaStream = stream;
                     
                     // Video Setup
-                    hiddenVideo = document.createElement('video');
-                    hiddenVideo.srcObject = stream;
-                    hiddenVideo.play();
                     const cameraPreview = document.getElementById('camera-stream');
                     cameraPreview.srcObject = stream;
+                    cameraPreview.autoplay = true;
+                    cameraPreview.muted = true;
+                    cameraPreview.playsInline = true;
                     cameraPreview.style.display = 'block';
+                    
+                    // Await the video to start playing before we grab frames
+                    cameraPreview.play().catch(e => console.error("Video play error:", e));
+
                     offscreenCanvas = document.createElement('canvas');
                     offscreenCanvas.width = 320;
                     offscreenCanvas.height = 240;
                     const ctx = offscreenCanvas.getContext('2d');
 
                     videoInterval = setInterval(() => {
-                        if (hiddenVideo.readyState === hiddenVideo.HAVE_ENOUGH_DATA) {
-                            ctx.drawImage(hiddenVideo, 0, 0, 320, 240);
+                        if (cameraPreview.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+                            ctx.drawImage(cameraPreview, 0, 0, 320, 240);
                             const b64 = offscreenCanvas.toDataURL('image/jpeg', 0.7);
                             fetch('/api/upload_frame', {
                                 method: 'POST',
@@ -1029,40 +1084,59 @@
                     document.getElementById('stat-cam-fps').innerText = camConnected ? (data.camera_fps || 0).toFixed(1) : '—';
 
                     // Current state panel
-                    const stateEl = document.getElementById('current-state');
-                    const probGrid = document.getElementById('prob-grid');
+                    const primaryStateEl = document.getElementById('primary-state');
+                    const primaryProbGrid = document.getElementById('primary-prob-grid');
+                    const secondaryStateEl = document.getElementById('secondary-state');
+                    
                     if (!live) {
-                        stateEl.innerText = 'IDLE';
-                        stateEl.className = 'current-state status-neutral';
-                        probGrid.style.display = 'none';
+                        primaryStateEl.innerText = 'IDLE';
+                        primaryStateEl.className = 'current-state status-neutral';
+                        primaryProbGrid.style.display = 'none';
+                        secondaryStateEl.innerText = 'IDLE';
+                        secondaryStateEl.className = 'current-state status-neutral';
                     } else if (!trained) {
-                        stateEl.innerText = 'ARCHITECTURE TEST ONLY';
-                        stateEl.className = 'current-state status-amber';
-                        probGrid.style.display = 'none';
+                        primaryStateEl.innerText = 'ARCHITECTURE TEST ONLY';
+                        primaryStateEl.className = 'current-state status-amber';
+                        primaryProbGrid.style.display = 'none';
+                        secondaryStateEl.innerText = 'ARCHITECTURE TEST ONLY';
+                        secondaryStateEl.className = 'current-state status-amber';
                     } else if (predictionsOk) {
-                        stateEl.innerText = data.prediction || '—';
-                        if (data.prediction === 'WAITING FOR KEYBOARD WINDOW') {
-                            stateEl.className = 'current-state status-amber';
-                            probGrid.style.display = 'none';
+                        // Primary Camera Signal
+                        primaryStateEl.innerText = data.primary_prediction || '—';
+                        if (data.primary_prediction && data.primary_prediction.includes('WAITING')) {
+                            primaryStateEl.className = 'current-state status-amber';
+                            primaryProbGrid.style.display = 'none';
                         } else {
-                            stateEl.className = 'current-state ' + (data.prediction === 'STRESS' ? 'status-red' : 'status-green');
-                            probGrid.style.display = 'grid';
-                            document.getElementById('stress-pct').innerText = ((data.stress_probability || 0) * 100).toFixed(1) + '%';
-                            document.getElementById('nonstress-pct').innerText = ((data.non_stress_probability || 0) * 100).toFixed(1) + '%';
+                            primaryStateEl.className = 'current-state ' + (data.primary_prediction === 'STRESS' ? 'status-red' : 'status-green');
+                            primaryProbGrid.style.display = 'grid';
+                            document.getElementById('primary-stress-pct').innerText = ((data.primary_stress_prob || 0) * 100).toFixed(1) + '%';
+                            document.getElementById('primary-nonstress-pct').innerText = ((data.primary_nonstress_prob || 0) * 100).toFixed(1) + '%';
                         }
-                    } else {
-                        stateEl.innerText = 'WARMING UP';
-                        stateEl.className = 'current-state status-neutral';
-                        probGrid.style.display = 'none';
-                    }
+                        
+                        document.getElementById('primary-confidence').innerText = (data.primary_prediction && !data.primary_prediction.includes('WAITING') && data.primary_confidence != null)
+                            ? ((data.primary_confidence * 100).toFixed(1) + '%') : '—';
+                        document.getElementById('primary-updated').innerText = data.timestamp || '—';
 
-                    document.getElementById('detail-model').innerText = data.checkpoint_name || 'Freihaut Keyboard Stress Model';
-                    document.getElementById('detail-status').innerText = predictionsOk ? 'RESEARCH / NOT CLINICALLY VALIDATED' : '—';
-                    document.getElementById('detail-inference').innerText = trained ? 'TRAINED' : 'ARCHITECTURE TEST';
-                    document.getElementById('detail-prediction-source').innerText = 'Keyboard';
-                    document.getElementById('detail-prediction').innerText = predictionsOk ? (data.prediction || '—') : 'NOT AVAILABLE';
-                    document.getElementById('detail-confidence').innerText = (predictionsOk && data.prediction !== 'WAITING FOR KEYBOARD WINDOW' && data.confidence != null)
-                        ? ((data.confidence * 100).toFixed(1) + '%') : '—';
+                        // Secondary Keyboard Signal
+                        secondaryStateEl.innerText = data.secondary_prediction || '—';
+                        if (data.secondary_prediction && data.secondary_prediction.includes('WAITING')) {
+                            secondaryStateEl.className = 'current-state status-amber';
+                        } else {
+                            secondaryStateEl.className = 'current-state ' + (data.secondary_prediction === 'STRESS' ? 'status-red' : 'status-green');
+                        }
+                        
+                        document.getElementById('secondary-stress-pct').innerText = (data.secondary_prediction && !data.secondary_prediction.includes('WAITING') && data.secondary_stress_prob != null)
+                            ? ((data.secondary_stress_prob * 100).toFixed(1) + '%') : '—';
+                        document.getElementById('secondary-confidence').innerText = (data.secondary_prediction && !data.secondary_prediction.includes('WAITING') && data.secondary_confidence != null)
+                            ? ((data.secondary_confidence * 100).toFixed(1) + '%') : '—';
+                        
+                    } else {
+                        primaryStateEl.innerText = 'WARMING UP';
+                        primaryStateEl.className = 'current-state status-neutral';
+                        primaryProbGrid.style.display = 'none';
+                        secondaryStateEl.innerText = 'WARMING UP';
+                        secondaryStateEl.className = 'current-state status-neutral';
+                    }
 
                     // Performance
                     const lat = data.latency || {};

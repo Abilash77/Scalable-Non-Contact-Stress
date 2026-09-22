@@ -10,8 +10,12 @@ import base64
 import json
 import urllib.error
 import urllib.request
+import uuid
+import datetime
+import matplotlib
+matplotlib.use('Agg')
 
-from flask import Flask, jsonify, request, Response, render_template
+from flask import Flask, jsonify, request, Response, render_template, send_from_directory
 
 
 def _load_local_env():
@@ -41,6 +45,7 @@ from keyboard_stress_features import (
     KEYSTROKES_PER_SUBWINDOW, NUM_TIMESTEPS, KeyboardStressPredictor,
     browser_events_to_raw, compute_subwindow_features, events_to_pairs,
 )
+from pdf_generator import generate_session_pdf
 
 try:
     import pyaudio
@@ -243,6 +248,11 @@ def webcam_worker(shared_state):
 
         b64_frame = shared_state.get('remote_frame_b64')
         if not b64_frame:
+            last_ts = shared_state.get('last_frame_timestamp', 0)
+            if last_ts > 0 and (time.time() - last_ts) > 3.0:
+                shared_state['camera_connected'] = False
+                shared_state['face_status'] = "OFFLINE"
+                shared_state['eye_status'] = "OFFLINE"
             continue
             
         try:
@@ -252,6 +262,8 @@ def webcam_worker(shared_state):
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame is None:
                 continue
+                
+            print(f"CAMERA_FRAME_RECEIVED | timestamp={time.time()} | frame_size={len(img_data)} | decoded_width={frame.shape[1]} | decoded_height={frame.shape[0]}", flush=True)
                 
             frame_timestamp = time.time()
             shared_state['camera_connected'] = True
@@ -280,6 +292,7 @@ def webcam_worker(shared_state):
             shared_state['eye_status'] = eye_status
 
             if face_status == "DETECTED":
+                print(f"FACE_DETECTION | faces={face_meta.get('count', 1)}", flush=True)
                 face_detection_count += 1
                 shared_state['face_last_valid_time'] = time.time()
                 shared_state['face_sample_id'] = face_detection_count
@@ -308,6 +321,7 @@ def webcam_worker(shared_state):
                         preds = fer_model(face_input, training=False).numpy()[0]
                         probs = {fer_classes[i]: float(preds[i]) for i in range(len(fer_classes))}
                         top_emotion = fer_classes[np.argmax(preds)].upper()
+                        print(f"FACIAL_EXPRESSION | expression={top_emotion} | confidence={preds[np.argmax(preds)]:.4f}", flush=True)
                         shared_state['face_emotion_probs'] = probs
                         shared_state['face_emotion_label'] = top_emotion
                         shared_state['face_fer_inference_count'] = shared_state.get('face_fer_inference_count', 0) + 1
@@ -323,6 +337,7 @@ def webcam_worker(shared_state):
                 shared_state['face_count'] = 0
 
             if eye_status == "DETECTED":
+                print(f"EYE_FEATURES | dimension={len(eye_feats)} | timestamp={time.time()}", flush=True)
                 eye_detection_count += 1
                 shared_state['eye_last_valid_time'] = time.time()
                 shared_state['eye_sample_id'] = eye_detection_count
@@ -551,18 +566,19 @@ def inference_worker(shared_state):
             us['keystroke'] = us.get('keystroke', 0) + (keyboard_id - last_sample_ids['keystroke'])
             last_sample_ids['keystroke'] = keyboard_id
             last_valid_time['keystroke'] = now
-        if last_valid_time['keystroke'] > 0 and (now - last_valid_time['keystroke']) < 30.0:
+        if (last_valid_time['keystroke'] > 0 and (now - last_valid_time['keystroke']) < 30.0) or shared_state.get('keyboard_status') == 'RECEIVING':
             runtime_mask[2] = 1.0
-        elif shared_state.get('keyboard_status') == 'RECEIVING' and \
-                (now - float(shared_state.get('keyboard_last_sample_time', 0) or 0)) >= 30.0:
-            shared_state['keyboard_status'] = 'IDLE'
+            if (now - float(shared_state.get('keyboard_last_sample_time', 0) or 0)) >= 30.0:
+                shared_state['keyboard_status'] = 'IDLE'
 
         predicted_now = False
+        camera_predicted_now = False
+        
         if is_trained and new_keyboard_sample and len(window) >= T:
             X = np.asarray(window[-T:], dtype=np.float32)[None]
             t_inf = time.perf_counter()
             try:
-                stress_prob = float(predictor.predict_proba(X)[0])
+                k_stress_prob = float(predictor.predict_proba(X)[0])
                 shared_state['successful_cycles'] += 1
             except Exception as e:
                 shared_state['failed_cycles'] += 1
@@ -570,30 +586,97 @@ def inference_worker(shared_state):
                 continue
             last_pred_latency = (time.perf_counter() - t_inf) * 1000
             ic['keystroke'] = ic.get('keystroke', 0) + 1
-            pred_label = 1 if stress_prob >= predictor.threshold else 0
-            nonstress_prob = 1.0 - stress_prob
-            confidence = stress_prob if pred_label == 1 else nonstress_prob
+            k_pred_label = 1 if k_stress_prob >= predictor.threshold else 0
+            k_nonstress_prob = 1.0 - k_stress_prob
+            k_confidence = k_stress_prob if k_pred_label == 1 else k_nonstress_prob
+            
+            print(f"KEYBOARD_WINDOW_READY | dimension=7", flush=True)
+            print(f"KEYBOARD_PREDICTION | stress_probability={k_stress_prob:.4f} | nonstress_probability={k_nonstress_prob:.4f} | confidence={k_confidence:.4f}", flush=True)
+            
+            shared_state['keyboard_stress_prob'] = round(k_stress_prob, 4)
+            shared_state['keyboard_nonstress_prob'] = round(k_nonstress_prob, 4)
+            shared_state['keyboard_confidence'] = round(k_confidence, 4)
+            shared_state['keyboard_pred'] = k_pred_label
+            shared_state['keyboard_predictions_available'] = True
+            predicted_now = True
+
+        face_probs = shared_state.get('face_emotion_probs')
+        if face_probs and shared_state.get('face_detected', False):
+            # Facial expression stress probability (FER-2013 labels)
+            f_stress_prob = (
+                face_probs.get('angry', 0) + 
+                face_probs.get('disgust', 0) + 
+                face_probs.get('fear', 0) + 
+                face_probs.get('sad', 0)
+            )
+            f_nonstress_prob = (
+                face_probs.get('happy', 0) + 
+                face_probs.get('neutral', 0) + 
+                face_probs.get('surprise', 0)
+            )
+            total_f = f_stress_prob + f_nonstress_prob
+            if total_f > 0:
+                f_stress_prob /= total_f
+                f_nonstress_prob /= total_f
+            else:
+                f_stress_prob = 0.5
+                f_nonstress_prob = 0.5
+                
+            # Eye feature based heuristic (Research)
+            eye_feats = shared_state.get('eye_features')
+            eye_stress = 0.0
+            if eye_feats is not None and len(eye_feats) == 5:
+                # Features: pupil_size_left, pupil_size_right, gaze_x, gaze_y, eye_closure
+                pupil_avg = (eye_feats[0] + eye_feats[1]) / 2.0
+                ear = eye_feats[4]
+                
+                # Heuristic logic: larger pupil size and higher EAR (widened eyes) increase stress score
+                if ear > 0.3: eye_stress += (ear - 0.3) * 2.0
+                if pupil_avg > 0.4: eye_stress += (pupil_avg - 0.4) * 2.0
+                eye_stress = min(1.0, max(0.0, eye_stress))
+                
+                # Combine FER probabilities with Eye heuristic
+                c_stress_prob = (0.7 * f_stress_prob) + (0.3 * eye_stress)
+                c_nonstress_prob = 1.0 - c_stress_prob
+            else:
+                c_stress_prob = f_stress_prob
+                c_nonstress_prob = f_nonstress_prob
+            
+            c_pred_label = 1 if c_stress_prob >= 0.5 else 0
+            # Confidence for a heuristic score
+            c_confidence = max(c_stress_prob, c_nonstress_prob)
+            
+            print(f"CAMERA_PREDICTION | stress_probability={c_stress_prob:.4f} | nonstress_probability={c_nonstress_prob:.4f} | confidence={c_confidence:.4f}", flush=True)
+            
+            shared_state['camera_stress_prob'] = round(c_stress_prob, 4)
+            shared_state['camera_nonstress_prob'] = round(c_nonstress_prob, 4)
+            shared_state['camera_confidence'] = round(c_confidence, 4)
+            shared_state['camera_pred'] = c_pred_label
+            shared_state['camera_predictions_available'] = True
+            camera_predicted_now = True
+
+        if predicted_now or camera_predicted_now:
             now_ts = datetime.datetime.now().strftime("%H:%M:%S")
-            prediction_history.append({
-                'timestamp': now_ts,
-                'prediction': 'STRESS' if pred_label == 1 else 'NON-STRESS',
-                'stress_prob_pct': round(stress_prob * 100, 1),
-                'source': 'trained_model',
-            })
+            hist_entry = {'timestamp': now_ts}
+            if shared_state.get('camera_predictions_available'):
+                hist_entry['camera_prediction'] = 'STRESS' if shared_state.get('camera_pred') == 1 else 'NON-STRESS'
+                hist_entry['camera_stress_prob_pct'] = round(shared_state.get('camera_stress_prob', 0) * 100, 1)
+                hist_entry['camera_confidence'] = shared_state.get('camera_confidence')
+                hist_entry['prediction'] = hist_entry['camera_prediction']
+                hist_entry['stress_prob_pct'] = hist_entry['camera_stress_prob_pct']
+                
+            if shared_state.get('keyboard_predictions_available'):
+                hist_entry['keyboard_prediction'] = 'STRESS' if shared_state.get('keyboard_pred') == 1 else 'NON-STRESS'
+                hist_entry['keyboard_stress_prob_pct'] = round(shared_state.get('keyboard_stress_prob', 0) * 100, 1)
+                hist_entry['keyboard_confidence'] = shared_state.get('keyboard_confidence')
+                
+            prediction_history.append(hist_entry)
             prediction_history = prediction_history[-MAX_HISTORY:]
-            shared_state['predictions_available'] = True
-            shared_state['fusion_prob'] = round(stress_prob, 4)
-            shared_state['fusion_pred'] = pred_label
-            # No smoothing: the dashboard shows the model's real probability for the latest window.
-            shared_state['raw_stress_prob'] = round(stress_prob, 4)
-            shared_state['raw_nonstress_prob'] = round(nonstress_prob, 4)
-            shared_state['smoothed_stress_prob'] = round(stress_prob, 4)
-            shared_state['smoothed_nonstress_prob'] = round(nonstress_prob, 4)
-            shared_state['confidence'] = round(confidence, 4)
             shared_state['prediction_timestamp'] = now_ts
             shared_state['prediction_history'] = _json.dumps(prediction_history)
-            predicted_now = True
-        elif not is_trained:
+            
+            shared_state['predictions_available'] = True
+        elif not is_trained and not camera_predicted_now:
             shared_state['successful_cycles'] += 1
 
         shared_state['unique_samples'] = us
@@ -814,19 +897,43 @@ def build_status_payload(state):
         if 'HARDWARE_UNAVAILABLE' in hw_str or 'ERROR' in hw_str:
             truly_unavailable.append(mod_name)
 
-    fusion_pred = state.get('fusion_pred', 0)
     if is_trained and is_live:
-        if not keyboard_window_ready or not state.get('predictions_available', False):
-            prediction = 'WAITING FOR KEYBOARD WINDOW'
-            stress_probability = None
-            non_stress_probability = None
-            confidence = None
+        if not camera_connected:
+            primary_prediction = 'WAITING FOR CAMERA'
+        elif not face_detected:
+            primary_prediction = 'WAITING FOR FACE'
+        elif not state.get('camera_predictions_available', False):
+            primary_prediction = 'WAITING FOR VALID CAMERA WINDOW'
         else:
-            prediction = 'STRESS' if fusion_pred == 1 else 'NON-STRESS'
-            stress_probability = state.get('smoothed_stress_prob', 0.0)
-            non_stress_probability = state.get('smoothed_nonstress_prob', 1.0)
-            confidence = state.get('confidence', 0.0)
+            primary_prediction = 'STRESS' if state.get('camera_pred', 0) == 1 else 'NON-STRESS'
+            
+        primary_stress_prob = state.get('camera_stress_prob', 0.0)
+        primary_nonstress_prob = state.get('camera_nonstress_prob', 0.0)
+        primary_confidence = state.get('camera_confidence', 0.0)
+        
+        if not keyboard_window_ready or not state.get('keyboard_predictions_available', False):
+            secondary_prediction = 'WAITING FOR KEYBOARD WINDOW'
+        else:
+            secondary_prediction = 'STRESS' if state.get('keyboard_pred', 0) == 1 else 'NON-STRESS'
+            
+        secondary_stress_prob = state.get('keyboard_stress_prob', 0.0)
+        secondary_nonstress_prob = state.get('keyboard_nonstress_prob', 0.0)
+        secondary_confidence = state.get('keyboard_confidence', 0.0)
+        
+        prediction = primary_prediction
+        stress_probability = primary_stress_prob
+        non_stress_probability = primary_nonstress_prob
+        confidence = primary_confidence
     else:
+        primary_prediction = 'NOT AVAILABLE'
+        primary_stress_prob = None
+        primary_nonstress_prob = None
+        primary_confidence = None
+        secondary_prediction = 'NOT AVAILABLE'
+        secondary_stress_prob = None
+        secondary_nonstress_prob = None
+        secondary_confidence = None
+        
         prediction = 'NOT AVAILABLE'
         stress_probability = None
         non_stress_probability = None
@@ -850,6 +957,8 @@ def build_status_payload(state):
         elif m == 'eye_pupil' and 'eye' in trained_mods_raw:
             usable_mods.append(m)
 
+    fusion_pred = int(state.get('fusion_pred', -1))
+
     payload = {
         'status': status,
         'model_status': model_status,
@@ -858,6 +967,17 @@ def build_status_payload(state):
         'stress_probability': stress_probability,
         'non_stress_probability': non_stress_probability,
         'confidence': confidence,
+        
+        'primary_prediction': primary_prediction,
+        'primary_stress_prob': primary_stress_prob,
+        'primary_nonstress_prob': primary_nonstress_prob,
+        'primary_confidence': primary_confidence,
+        
+        'secondary_prediction': secondary_prediction,
+        'secondary_stress_prob': secondary_stress_prob,
+        'secondary_nonstress_prob': secondary_nonstress_prob,
+        'secondary_confidence': secondary_confidence,
+        
         'keyboard_window_ready': keyboard_window_ready,
         'modality_reliability': reliabilities,
         'modality_attention': modality_attention,
@@ -1215,10 +1335,84 @@ def _stop_session_state():
     manager_dict['session_start_time'] = 0.0
 
 
+def _finalize_session_report():
+    import json
+    session_id = str(uuid.uuid4())[:8]
+    report_filename = f"stress_session_{session_id}.pdf"
+    os.makedirs(os.path.join(os.path.dirname(__file__), 'reports'), exist_ok=True)
+    report_path = os.path.join(os.path.dirname(__file__), 'reports', report_filename)
+    
+    start_ts = manager_dict.get('session_start_time', 0.0)
+    end_ts = time.time()
+    duration_s = int(end_ts - start_ts) if start_ts > 0 else 0
+    duration_str = f"{duration_s // 60}m {duration_s % 60}s"
+    
+    # Calculate averages from timeline
+    timeline = json.loads(manager_dict.get('prediction_history', '[]'))
+    stress_preds = [x for x in timeline if x.get('camera_prediction') == 'STRESS']
+    nonstress_preds = [x for x in timeline if x.get('camera_prediction') == 'NON-STRESS']
+    cam_probs = [x.get('camera_stress_prob_pct', 0) for x in timeline if 'camera_stress_prob_pct' in x]
+    avg_stress_prob = sum(cam_probs) / len(cam_probs) if cam_probs else 0.0
+    peak_stress_prob = max(cam_probs, default=0.0)
+    
+    final_pred = 'INSUFFICIENT DATA'
+    if manager_dict.get('camera_predictions_available'):
+        final_pred = 'STRESS' if manager_dict.get('camera_pred') == 1 else 'NON-STRESS'
+    
+    try:
+        mod_status = json.loads(manager_dict.get('runtime_modality_status', '{}'))
+    except:
+        mod_status = {}
+        
+    session_data = {
+        'session_id': session_id,
+        'date': datetime.datetime.now().strftime("%Y-%m-%d"),
+        'start_time': datetime.datetime.fromtimestamp(start_ts).strftime("%H:%M:%S") if start_ts else "N/A",
+        'end_time': datetime.datetime.fromtimestamp(end_ts).strftime("%H:%M:%S"),
+        'duration': duration_str,
+        'final_prediction': final_pred,
+        'stress_probability': (manager_dict.get('camera_stress_prob') or 0.0) * 100,
+        'nonstress_probability': (manager_dict.get('camera_nonstress_prob') or 0.0) * 100,
+        'confidence': (manager_dict.get('camera_confidence') or 0.0) * 100,
+        'prediction_source': 'CAMERA STRESS ESTIMATE (RESEARCH / NOT CLINICALLY VALIDATED)',
+
+        
+        'secondary_prediction': 'STRESS' if manager_dict.get('keyboard_pred') == 1 else ('NON-STRESS' if manager_dict.get('keyboard_predictions_available') else 'WAITING'),
+        'secondary_stress_prob': (manager_dict.get('keyboard_stress_prob') or 0.0) * 100,
+        'secondary_confidence': (manager_dict.get('keyboard_confidence') or 0.0) * 100,
+
+        'valid_predictions_count': len([x for x in timeline if 'camera_prediction' in x]),
+        'stress_count': len(stress_preds),
+        'nonstress_count': len(nonstress_preds),
+        'avg_stress_prob': avg_stress_prob,
+        'peak_stress_prob': peak_stress_prob,
+        'avg_confidence': max(avg_stress_prob, 100.0 - avg_stress_prob) if timeline else 0.0,
+        'modalities': mod_status,
+        'timeline': timeline,
+        'data_quality': {
+            'camera_connected': manager_dict.get('camera_connected', False),
+            'failed_cycles': manager_dict.get('failed_cycles', 0)
+        },
+        'model_name': manager_dict.get('model_name', 'N/A')
+    }
+    
+    # Augment modalities with specific counts
+    if 'facial' not in session_data['modalities']:
+        session_data['modalities']['facial'] = {}
+    session_data['modalities']['facial']['face_detection_count'] = manager_dict.get('face_detection_count', 0)
+    session_data['modalities']['facial']['latest_expression'] = manager_dict.get('face_emotion_label', 'N/A')
+    session_data['modalities']['facial']['expression_confidence'] = "N/A"
+    
+    generate_session_pdf(session_data, report_path)
+    return f"/reports/{report_filename}", session_data
+
+
 @app.route('/api/control', methods=['POST'])
 def api_control():
     data = request.json
     action = data.get('action')
+    report_url = None
+    session_info = None
     if action == 'start':
         if not manager_dict['is_live_monitoring']:
             _new_session_marker()
@@ -1226,6 +1420,12 @@ def api_control():
             manager_dict['is_live_monitoring'] = True
             manager_dict['status'] = 'LIVE'
     elif action == 'stop':
+        if manager_dict['is_live_monitoring']:
+            try:
+                report_url, session_info = _finalize_session_report()
+            except Exception as e:
+                import traceback
+                return jsonify({'status': 'error', 'error': str(e), 'traceback': traceback.format_exc()})
         _stop_session_state()
     elif action == 'reset':
         _stop_session_state()
@@ -1239,7 +1439,16 @@ def api_control():
     elif action == 'clear_handwriting':
         manager_dict['handwriting_status'] = 'WAITING_FOR_INPUT'
         manager_dict['handwriting_clear_flag'] = True
-    return jsonify({'status': 'success', 'is_live_monitoring': manager_dict['is_live_monitoring']})
+    
+    resp = {'status': 'success', 'is_live_monitoring': manager_dict['is_live_monitoring']}
+    if report_url:
+        resp['report_url'] = report_url
+        resp['session_info'] = session_info
+    return jsonify(resp)
+
+@app.route('/reports/<filename>')
+def serve_report(filename):
+    return send_from_directory(os.path.join(os.path.dirname(__file__), 'reports'), filename)
 
 @app.route('/api/upload_frame', methods=['POST'])
 def api_upload_frame():
@@ -1275,12 +1484,18 @@ def api_media_status():
 def api_upload_keystrokes():
     data = request.json
     if manager_dict.get('is_live_monitoring') and data and 'events' in data:
+        print(f"KEYBOARD_EVENT | event_count={len(data['events'])}", flush=True)
         import json
         with KEY_EVENTS_LOCK:
             pending = main_shared_state.get('remote_keystroke_events')
             events = (json.loads(pending) if pending else []) + list(data['events'])
             main_shared_state['remote_keystroke_events'] = json.dumps(events)
     return jsonify({"status": "ok"})
+
+@app.route('/api/debug/live')
+def api_debug_live():
+    return jsonify({"error": "Forbidden"}), 403
+
 
 def gen_frames():
     while manager_dict.get('running', True):

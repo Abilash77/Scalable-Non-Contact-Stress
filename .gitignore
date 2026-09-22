@@ -88,3 +88,14 @@ scratch/CREDENTIALS_TRANSFER.txt
 scratch/CREDENTIALS_TRANSFER_INSTRUCTIONS.txt
 
 scratch/REAL_CREDENTIALS_TRANSFER.txt
+
+# Tunnel executables
+cloudflared.exe
+tailscale-setup.exe
+tailscale.msi
+tailscale.zip
+
+# Temporary miscreated files
+null
+reports/
+
