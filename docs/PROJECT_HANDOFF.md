@@ -250,17 +250,19 @@ The fusion mechanism as implemented in `src/DL_models.py`:
 
 ## 9. Mathematical Formulation
 
+The system processes a multimodal input set $X = \{X_k, X_s, X_f, X_e, X_h\}$, where the modality set is $m \in \{k, s, f, e, h\}$ representing Keyboard ($k$), Speech ($s$), Facial ($f$), Eye/Pupil ($e$), and Handwriting ($h$).
+
 As implemented in `src/DL_models.py`:
 
-- **Eq 1 (Encoding):** `Zm = Dense(128, relu)(Xm)` followed by `Dropout(0.3)`
-- **Eq 2 (Temporal):** `Hm = GRU(64)(Zm)`
-- **Eq 3 (Reliability):** `rm = σ(Wr_m · Hm)`
-- **Eq 4 (Gated):** `fm = Hm ⊙ rm`
-- **Eq 5 (Logit):** `am = Wa_m · fm`
-- **Eq 6 (Attention):** `αm = softmax(a + (1-mask) × (-1e9))`
-- **Eq 7 (Fusion):** `F = Σ αm · Hm`
-- **Eq 8 (Classification):** `ŷ = softmax(Wc · F + bc)`
-- **Eq 9 (Smoothing, runtime only):** `p_smoothed = 0.3 × p_raw + 0.7 × p_prev`
+- **Eq 1 (Encoding):** For each modality $m \in \{k, s, f, e, h\}$, $Z_m = \text{Dense}(128, \text{relu})(X_m)$ followed by $\text{Dropout}(0.3)$
+- **Eq 2 (Temporal):** $H_m = \text{GRU}(64)(Z_m)$
+- **Eq 3 (Reliability):** $r_m = \sigma(W_{r_m} \cdot H_m)$
+- **Eq 4 (Gated):** $f_m = H_m \odot r_m$
+- **Eq 5 (Logit):** $a_m = W_{a_m} \cdot f_m$
+- **Eq 6 (Attention):** $\alpha_m = \text{softmax}(a_m + (1-\text{mask}_m) \times (-1e9))$
+- **Eq 7 (Fusion):** $F = \sum_{m \in \{k, s, f, e, h\}} \alpha_m \cdot H_m$
+- **Eq 8 (Classification):** $\hat{y} = \text{softmax}(W_c \cdot F + b_c)$
+- **Eq 9 (Smoothing, runtime only):** $p_{\text{smoothed}} = 0.3 \times p_{\text{raw}} + 0.7 \times p_{\text{prev}}$
 
 > **Note:** Eq 9 (EMA smoothing) is an engineering convenience for dashboard display stability and is explicitly NOT part of the core model architecture.
 

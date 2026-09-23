@@ -1,13 +1,13 @@
 import os
 import datetime
+import io
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import io
 
 def generate_session_pdf(session_data, output_path):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -16,245 +16,343 @@ def generate_session_pdf(session_data, output_path):
                             topMargin=40, bottomMargin=40)
     styles = getSampleStyleSheet()
     
+    # Custom Styles
     title_style = ParagraphStyle(
         'TitleStyle',
         parent=styles['Heading1'],
-        fontSize=20,
-        spaceAfter=10,
-        alignment=1 # Center
+        fontSize=18,
+        spaceAfter=5,
+        alignment=1, # Center
+        textColor=colors.HexColor("#1A202C")
     )
     subtitle_style = ParagraphStyle(
         'SubtitleStyle',
         parent=styles['Heading2'],
         fontSize=12,
-        spaceAfter=20,
-        alignment=1
+        spaceAfter=15,
+        alignment=1,
+        textColor=colors.HexColor("#4A5568")
     )
-    heading_style = ParagraphStyle(
-        'HeadingStyle',
+    section_heading = ParagraphStyle(
+        'SectionHeading',
         parent=styles['Heading2'],
         fontSize=14,
-        textColor=colors.HexColor("#003366"),
+        textColor=colors.HexColor("#2B6CB0"),
         spaceBefore=15,
-        spaceAfter=10
+        spaceAfter=8,
+        borderPadding=5,
+        backColor=colors.HexColor("#EBF8FF")
+    )
+    sub_heading = ParagraphStyle(
+        'SubHeading',
+        parent=styles['Heading3'],
+        fontSize=11,
+        textColor=colors.HexColor("#2D3748"),
+        spaceBefore=10,
+        spaceAfter=5
     )
     normal_style = styles['Normal']
+    normal_style.fontSize = 10
     
+    alert_style = ParagraphStyle(
+        'AlertStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor("#C53030"),
+        backColor=colors.HexColor("#FED7D7"),
+        borderPadding=5,
+        spaceBefore=5,
+        spaceAfter=5
+    )
+    
+    diagram_style = ParagraphStyle(
+        'DiagramStyle',
+        parent=styles['Normal'],
+        fontName='Courier',
+        fontSize=9,
+        alignment=1,
+        spaceBefore=5,
+        spaceAfter=5,
+        leading=12
+    )
+
     story = []
     
-    # Title
-    story.append(Paragraph("NON-CONTACT STRESS DETECTION SESSION REPORT", title_style))
-    story.append(Paragraph("Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence", subtitle_style))
+    # 1. REPORT HEADER
+    story.append(Paragraph("Scalable Non-Contact Stress Detection Using Hybrid Multimodal Intelligence", title_style))
+    story.append(Paragraph("Multimodal Stress Monitoring — Research Session Report", subtitle_style))
     
-    # Session Information
-    story.append(Paragraph("SESSION INFORMATION", heading_style))
-    session_info = [
-        ["Session ID", session_data.get('session_id', 'N/A')],
-        ["Date", session_data.get('date', 'N/A')],
-        ["Start Time", session_data.get('start_time', 'N/A')],
-        ["End Time", session_data.get('end_time', 'N/A')],
-        ["Duration", session_data.get('duration', 'N/A')]
+    gen_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header_info = [
+        ["Session ID:", session_data.get('session_id', 'N/A')],
+        ["Generated On:", gen_time]
     ]
-    t_session = Table(session_info, colWidths=[150, 350])
-    t_session.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#f2f2f2")),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+    t_header = Table(header_info, colWidths=[100, 400])
+    t_header.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor("#718096")),
+        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+    ]))
+    story.append(t_header)
+    story.append(Spacer(1, 15))
+    
+    # 2. PARTICIPANT INFORMATION
+    story.append(Paragraph("PARTICIPANT INFORMATION", section_heading))
+    participant = session_data.get('participant', {})
+    part_info = [
+        ["Name", participant.get('name', 'N/A'), "Session ID", session_data.get('session_id', 'N/A')],
+        ["Gender", participant.get('gender', 'N/A'), "Start Time", session_data.get('start_time', 'N/A')],
+        ["Age", participant.get('age', 'N/A'), "End Time", session_data.get('end_time', 'N/A')],
+        ["", "", "Duration", session_data.get('duration', 'N/A')]
+    ]
+    t_part = Table(part_info, colWidths=[80, 180, 80, 180])
+    t_part.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#F7FAFC")),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor("#F7FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
         ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('PADDING', (0, 0), (-1, -1), 6),
     ]))
-    story.append(t_session)
+    story.append(t_part)
+    story.append(Spacer(1, 10))
     
-    # Final Stress Result
-    story.append(Paragraph("FINAL STRESS RESULT", heading_style))
-    stress_info = [
-        ["Final Prediction (Primary)", session_data.get('final_prediction', 'INSUFFICIENT DATA')],
-        ["Primary Stress Score (Camera)", f"{session_data.get('stress_probability', 0.0):.2f}%"],
-        ["Primary Confidence (Camera)", f"{session_data.get('confidence', 0.0):.2f}%"],
-        ["Secondary Prediction (Keyboard)", session_data.get('secondary_prediction', 'N/A')],
-        ["Secondary Stress Prob (Keyboard)", f"{session_data.get('secondary_stress_prob', 0.0):.2f}%"],
-        ["Secondary Confidence (Keyboard)", f"{session_data.get('secondary_confidence', 0.0):.2f}%"],
-        ["Prediction Source", session_data.get('prediction_source', 'N/A')],
-        ["Number of Valid Camera Predictions", str(session_data.get('valid_predictions_count', 0))],
-        ["Camera Stress Predictions", str(session_data.get('stress_count', 0))],
-        ["Camera Non-Stress Predictions", str(session_data.get('nonstress_count', 0))],
-        ["Average Camera Stress Score", f"{session_data.get('avg_stress_prob', 0.0):.2f}%"],
-        ["Peak Camera Stress Score", f"{session_data.get('peak_stress_prob', 0.0):.2f}%"],
-        ["Average Camera Confidence", f"{session_data.get('avg_confidence', 0.0):.2f}%"]
-    ]
-    t_stress = Table(stress_info, colWidths=[150, 350])
-    t_stress.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#f2f2f2")),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('PADDING', (0, 0), (-1, -1), 6),
-    ]))
-    story.append(t_stress)
-    
-    # Five Modality Results
-    story.append(Paragraph("FIVE MODALITY RESULTS", heading_style))
+    # 3. EXECUTIVE SESSION SUMMARY
+    story.append(Paragraph("EXECUTIVE SESSION SUMMARY", section_heading))
     mods = session_data.get('modalities', {})
+    active_mods = sum(1 for k, v in mods.items() if v.get('status') not in ['OFFLINE', 'N/A', None])
     
-    # Keyboard
-    story.append(Paragraph("1. KEYBOARD", styles['Heading3']))
-    kb = mods.get('keyboard', {})
-    kb_data = [
-        ["Status", kb.get('status', 'OFFLINE')],
-        ["7D feature vector", "YES" if kb.get('features_ready') else "NO"],
-        ["Valid windows", str(kb.get('buffer_fill', 0))],
-        ["Prediction contribution", "STRESS MODEL INPUT"]
+    stress_prob = session_data.get('stress_probability', 0.0)
+    non_stress_prob = session_data.get('non_stress_probability', 100.0 - stress_prob)
+    
+    pred_source = session_data.get('prediction_source', 'N/A')
+    source_label = pred_source
+    if "Camera" in pred_source or "Heuristic" in pred_source:
+        source_label = "CAMERA STRESS ESTIMATE — RESEARCH"
+        
+    exec_info = [
+        ["Final State", session_data.get('final_prediction', 'INSUFFICIENT DATA')],
+        ["Stress Score", f"{stress_prob:.2f}%"],
+        ["Non-Stress Score", f"{non_stress_prob:.2f}%"],
+        ["Available Modalities", f"{active_mods} / 5"],
+        ["Session Duration", session_data.get('duration', 'N/A')],
+        ["Prediction Source", source_label]
     ]
-    t_kb = Table(kb_data, colWidths=[150, 350])
-    t_kb.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f9f9f9"))]))
-    story.append(t_kb)
+    t_exec = Table(exec_info, colWidths=[150, 370])
+    t_exec.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#F7FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t_exec)
+    
+    if source_label == "CAMERA STRESS ESTIMATE — RESEARCH":
+        story.append(Paragraph("<b>Note:</b> Current session prediction is based on heuristic camera estimation, not a clinically validated probability or confidence.", normal_style))
     story.append(Spacer(1, 10))
     
-    # Speech
-    story.append(Paragraph("2. SPEECH", styles['Heading3']))
-    sp = mods.get('speech', {})
-    sp_data = [
-        ["Status", sp.get('status', 'OFFLINE')],
-        ["169D feature vector", "YES" if sp.get('features_ready') else "NO"],
-        ["Valid windows", str(sp.get('buffer_fill', 0))],
-        ["Prediction contribution", "FEATURE EXTRACTION ONLY"]
+    # 11. CURRENT SESSION RESULTS & 4. FIVE-MODALITY ANALYSIS
+    story.append(Paragraph("CURRENT SESSION RESULTS: FIVE-MODALITY ANALYSIS", section_heading))
+    
+    mod_table_data = [
+        ["Modality", "Status", "Feature Dimension", "Data / Sample Status"]
     ]
-    t_sp = Table(sp_data, colWidths=[150, 350])
-    t_sp.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f9f9f9"))]))
-    story.append(t_sp)
+    
+    def format_mod(mod_name, default_dim):
+        m = mods.get(mod_name, {})
+        status = m.get('status', 'Not available')
+        samples = str(m.get('buffer_fill', '0')) + ' valid windows'
+        if mod_name == 'facial' and 'face_detection_count' in m:
+            samples = f"{m.get('face_detection_count', 0)} faces detected"
+        elif mod_name == 'handwriting':
+            samples = f"{m.get('buffer_fill', 0)} submissions"
+        return [mod_name.capitalize().replace('_', '/'), status, default_dim, samples]
+
+    mod_table_data.append(format_mod('facial', '12D'))
+    mod_table_data.append(format_mod('eye_pupil', '5D'))
+    mod_table_data.append(format_mod('speech', '169D'))
+    mod_table_data.append(format_mod('keyboard', '7D'))
+    mod_table_data.append(format_mod('handwriting', '9D'))
+    
+    t_mod = Table(mod_table_data, colWidths=[100, 100, 120, 200])
+    t_mod.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#2B6CB0")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t_mod)
     story.append(Spacer(1, 10))
     
-    # Face
-    story.append(Paragraph("3. FACIAL EXPRESSION", styles['Heading3']))
-    fc = mods.get('facial', {})
-    fc_data = [
-        ["Status", fc.get('status', 'OFFLINE')],
-        ["Face detected count", str(fc.get('face_detection_count', 0))],
-        ["Latest expression", fc.get('latest_expression', 'N/A')],
-        ["Expression confidence", str(fc.get('expression_confidence', 'N/A'))],
-        ["Prediction contribution", "FEATURE EXTRACTION ONLY"]
-    ]
-    t_fc = Table(fc_data, colWidths=[150, 350])
-    t_fc.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f9f9f9"))]))
-    story.append(t_fc)
-    story.append(Spacer(1, 10))
+    # 5. DATA QUALITY
+    story.append(Paragraph("DATA QUALITY", section_heading))
+    dq = session_data.get('data_quality', {})
     
-    # Eye
-    story.append(Paragraph("4. EYE / PUPIL", styles['Heading3']))
-    ey = mods.get('eye_pupil', {})
-    ey_data = [
-        ["Status", ey.get('status', 'OFFLINE')],
-        ["5D feature vector", "YES" if ey.get('features_ready') else "NO"],
-        ["Valid windows", str(ey.get('buffer_fill', 0))],
-        ["Prediction contribution", "FEATURE EXTRACTION ONLY"]
+    dq_data = [
+        ["Camera Availability", "Connected" if dq.get('camera_connected') else "Offline/Not Available"],
+        ["Eye/Pupil Tracking", "Ready" if mods.get('eye_pupil', {}).get('features_ready') else "Not available"],
+        ["Speech Audio", mods.get('speech', {}).get('status', 'Not available')],
+        ["Keyboard Tracking", mods.get('keyboard', {}).get('status', 'Not available')],
+        ["Handwriting Submissions", mods.get('handwriting', {}).get('status', 'Not available')]
     ]
-    t_ey = Table(ey_data, colWidths=[150, 350])
-    t_ey.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f9f9f9"))]))
-    story.append(t_ey)
-    story.append(Spacer(1, 10))
+    t_dq = Table(dq_data, colWidths=[150, 370])
+    t_dq.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#F7FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t_dq)
+    story.append(Spacer(1, 15))
     
-    # Handwriting
-    story.append(Paragraph("5. HANDWRITING", styles['Heading3']))
-    hw = mods.get('handwriting', {})
-    hw_data = [
-        ["Status", hw.get('status', 'OFFLINE')],
-        ["9D feature vector", "YES" if hw.get('features_ready') else "NO"],
-        ["Valid submissions/windows", str(hw.get('buffer_fill', 0))],
-        ["Prediction contribution", "FEATURE EXTRACTION ONLY"]
-    ]
-    t_hw = Table(hw_data, colWidths=[150, 350])
-    t_hw.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f9f9f9"))]))
-    story.append(t_hw)
-    
-    # Prediction Timeline
-    story.append(Paragraph("PREDICTION TIMELINE", heading_style))
+    # 6. STRESS SCORE TIMELINE
+    story.append(Paragraph("STRESS SCORE TIMELINE", section_heading))
     timeline_data = session_data.get('timeline', [])
     if len(timeline_data) >= 2:
-        plt.figure(figsize=(6, 4))
-        times = [datetime.datetime.strptime(x['timestamp'], "%H:%M:%S") for x in timeline_data if 'camera_stress_prob_pct' in x]
-        
-        if times:
-            # Primary Camera
-            cam_stress = [x['camera_stress_prob_pct'] for x in timeline_data if 'camera_stress_prob_pct' in x]
-            plt.plot(times, cam_stress, label='Primary (Camera) %', color='red', marker='o')
+        try:
+            plt.figure(figsize=(6.5, 3))
             
-            # Secondary Keyboard
-            key_times = [datetime.datetime.strptime(x['timestamp'], "%H:%M:%S") for x in timeline_data if 'keyboard_stress_prob_pct' in x]
-            key_stress = [x['keyboard_stress_prob_pct'] for x in timeline_data if 'keyboard_stress_prob_pct' in x]
-            if key_times:
-                plt.plot(key_times, key_stress, label='Secondary (Keyboard) %', color='blue', marker='x', linestyle='--')
-            
-            plt.title('Real-time Prediction Timeline')
-            plt.xlabel('Time')
-            plt.ylabel('Stress Probability (%)')
-            plt.legend()
-            plt.grid(True)
-            import matplotlib.dates as mdates
-            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-            plt.gcf().autofmt_xdate()
-            
-            img_buf = io.BytesIO()
-            plt.savefig(img_buf, format='png', bbox_inches='tight')
-            plt.close()
-            img_buf.seek(0)
-            story.append(Image(img_buf, width=400, height=266))
-        else:
-            story.append(Paragraph("Insufficient valid prediction history for timeline.", normal_style))
+            # Using actual recorded timestamps and camera stress prob from timeline
+            times = [datetime.datetime.strptime(x['timestamp'], "%H:%M:%S") for x in timeline_data if 'camera_stress_prob_pct' in x]
+            if times:
+                cam_stress = [x['camera_stress_prob_pct'] for x in timeline_data if 'camera_stress_prob_pct' in x]
+                plt.plot(times, cam_stress, label='Stress Score (%)', color='#E53E3E', linewidth=2)
+                
+                plt.title('Live Session Stress Score', fontsize=12)
+                plt.xlabel('Time', fontsize=10)
+                plt.ylabel('Score (%)', fontsize=10)
+                plt.ylim(0, 100)
+                plt.grid(True, alpha=0.3)
+                
+                import matplotlib.dates as mdates
+                plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                plt.gcf().autofmt_xdate()
+                
+                img_buf = io.BytesIO()
+                plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
+                plt.close()
+                img_buf.seek(0)
+                story.append(Image(img_buf, width=420, height=195))
+            else:
+                story.append(Paragraph("Insufficient timeline data recorded for graph.", normal_style))
+        except Exception as e:
+            story.append(Paragraph(f"Error generating graph: {str(e)}", normal_style))
     else:
-        story.append(Paragraph("Insufficient valid prediction history for timeline.", normal_style))
+        story.append(Paragraph("Insufficient session duration for a stress timeline graph.", normal_style))
+        
+    story.append(Spacer(1, 15))
     
-    # Modality Activity Summary
-    story.append(Paragraph("MODALITY ACTIVITY SUMMARY", heading_style))
-    mod_summary = [["Modality", "Status", "Valid Windows", "Feature Size"]]
-    for m in ['keyboard', 'speech', 'facial', 'eye_pupil', 'handwriting']:
-        d = mods.get(m, {})
-        mod_summary.append([
-            m.capitalize(),
-            d.get('status', 'OFFLINE'),
-            str(d.get('buffer_fill', 0)),
-            d.get('feature_shape', 'N/A')
-        ])
-    t_mod_sum = Table(mod_summary, colWidths=[100, 100, 100, 100])
-    t_mod_sum.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#003366")),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    # 7. SESSION EVENT TIMELINE
+    story.append(Paragraph("SESSION EVENT TIMELINE", section_heading))
+    events = session_data.get('events', [])
+    if events:
+        evt_table = []
+        for e in events:
+            evt_table.append([e.get('time', 'N/A'), e.get('event', 'Unknown')])
+        t_evt = Table(evt_table, colWidths=[100, 420])
+        t_evt.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('PADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story.append(t_evt)
+    else:
+        # Fallback to basic session events if explicitly recorded events list is empty
+        evt_table = [
+            [session_data.get('start_time', 'N/A'), "Session started"],
+            [gen_time.split(" ")[1], "PDF generated"]
+        ]
+        t_evt = Table(evt_table, colWidths=[100, 420])
+        t_evt.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('PADDING', (0, 0), (-1, -1), 4),
+        ]))
+        story.append(t_evt)
+        
+    story.append(Spacer(1, 15))
+    
+    # 8. RESEARCH ARCHITECTURE SUMMARY & 9. MODEL INFORMATION
+    arch_elements = []
+    arch_elements.append(Paragraph("RESEARCH ARCHITECTURE & MODEL INFO", section_heading))
+    
+    model_info_data = [
+        ["Architecture / Model Name", session_data.get('model_name', 'RA-HMSD')],
+        ["Number of Modalities", "5 (Keyboard, Speech, Facial, Eye/Pupil, Handwriting)"],
+        ["Temporal Window", "T=10 (10 Timesteps)"],
+        ["Input Feature Dimensions", "Audio(169), Face(12), Eye(5), Key(7), Hand(9)"],
+        ["Parameter Count", "~214,166"],
+        ["Runtime Model Version", "N/A"]
+    ]
+    t_model = Table(model_info_data, colWidths=[150, 370])
+    t_model.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor("#F7FAFC")),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
         ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('PADDING', (0, 0), (-1, -1), 6),
     ]))
-    story.append(t_mod_sum)
+    arch_elements.append(t_model)
+    arch_elements.append(Spacer(1, 10))
     
-    # Data Quality
-    story.append(Paragraph("DATA QUALITY", heading_style))
-    dq = session_data.get('data_quality', {})
-    dq_info = [
-        ["Total session duration", session_data.get('duration', 'N/A')],
-        ["Valid prediction windows", str(session_data.get('valid_predictions_count', 0))],
-        ["Invalid/waiting windows", str(dq.get('failed_cycles', 0))],
-        ["Camera availability", "YES" if dq.get('camera_connected') else "NO"],
-        ["Keyboard availability", "YES" if mods.get('keyboard', {}).get('status') != 'OFFLINE' else "NO"],
-        ["Handwriting submissions", str(mods.get('handwriting', {}).get('buffer_fill', 0))]
+    diagram_text = """
+5 NON-CONTACT MODALITIES
+(Keyboard, Speech, Facial, Eye/Pupil, Handwriting)
+        ↓
+FEATURE EXTRACTION
+        ↓
+MODALITY-SPECIFIC ENCODERS
+        ↓
+TEMPORAL PROCESSING
+        ↓
+RELIABILITY ESTIMATION
+        ↓
+RELIABILITY-AWARE ATTENTION
+        ↓
+MULTIMODAL FUSION
+        ↓
+STRESS / NON-STRESS
+    """
+    arch_elements.append(Paragraph(diagram_text.replace('\n', '<br/>'), diagram_style))
+    story.append(KeepTogether(arch_elements))
+    
+    story.append(Spacer(1, 15))
+    
+    # 10. RESEARCH RESULTS — CLEAR SEPARATION
+    story.append(Paragraph("REFERENCE RESEARCH RESULTS", section_heading))
+    story.append(Paragraph("<b>Reported research-paper results — not this participant's session result.</b>", alert_style))
+    
+    research_res = [
+        ["Accuracy", "94.30%"],
+        ["Precision", "94.00%"],
+        ["Recall", "93.20%"],
+        ["F1 Score", "93.60%"],
+        ["AUROC", "0.967"],
+        ["Calibration Error", "0.036"],
+        ["Processing Latency", "38.40 ms/window"]
     ]
-    t_dq = Table(dq_info, colWidths=[200, 300])
-    t_dq.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f2f2f2"))]))
-    story.append(t_dq)
+    t_res = Table(research_res, colWidths=[150, 370])
+    t_res.setStyle(TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('PADDING', (0, 0), (-1, -1), 6),
+    ]))
+    story.append(t_res)
+    story.append(Spacer(1, 20))
     
-    # Model Information
-    story.append(Paragraph("MODEL INFORMATION", heading_style))
-    model_info = [
-        ["Model", session_data.get('model_name', 'N/A')],
-        ["Prediction source", session_data.get('prediction_source', 'N/A')],
-        ["Input feature size", "7D (Keyboard)"],
-        ["Window", "10 samples"],
-        ["Classification", "STRESS / NON-STRESS"]
-    ]
-    t_model = Table(model_info, colWidths=[150, 350])
-    t_model.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (0,-1), colors.HexColor("#f2f2f2"))]))
-    story.append(t_model)
-    
-    # Research Disclaimer
-    story.append(Spacer(1, 30))
-    story.append(Paragraph("<i>This system is an experimental research prototype for stress-related signal analysis and is not a medical diagnostic system.</i>", normal_style))
+    # 12. LIMITATIONS / RESEARCH DISCLAIMER
+    story.append(Paragraph("LIMITATIONS & RESEARCH DISCLAIMER", section_heading))
+    disclaimer_text = """
+    This system is a research prototype for stress-related signal estimation. 
+    It is not a medical device and does not diagnose stress disorders, anxiety, depression, 
+    personality traits, or other medical or psychological conditions.<br/><br/>
+    <b>Individual session scores should not be interpreted as clinical diagnosis.</b>
+    """
+    story.append(Paragraph(disclaimer_text, normal_style))
     
     doc.build(story)
     return output_path

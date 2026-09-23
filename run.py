@@ -1366,6 +1366,7 @@ def _finalize_session_report():
         
     session_data = {
         'session_id': session_id,
+        'participant': manager_dict.get('participant_details', {}),
         'date': datetime.datetime.now().strftime("%Y-%m-%d"),
         'start_time': datetime.datetime.fromtimestamp(start_ts).strftime("%H:%M:%S") if start_ts else "N/A",
         'end_time': datetime.datetime.fromtimestamp(end_ts).strftime("%H:%M:%S"),
@@ -1419,6 +1420,7 @@ def api_control():
             manager_dict['session_start_time'] = time.time()
             manager_dict['is_live_monitoring'] = True
             manager_dict['status'] = 'LIVE'
+            manager_dict['participant_details'] = data.get('participant', {})
     elif action == 'stop':
         if manager_dict['is_live_monitoring']:
             try:
