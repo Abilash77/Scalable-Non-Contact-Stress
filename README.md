@@ -186,11 +186,11 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph 10-Step Sequence
+    subgraph seq [10-Step Sequence]
         T1[t1] --> T2[t2] --> T3[t3] --> T_ellipsis[...] --> T10[t10]
     end
     
-    10-Step Sequence --> TR[Temporal Representation]
+    seq --> TR[Temporal Representation]
     TR --> RE[Reliability]
     RE --> ATT[Attention]
     ATT --> FUS[Fusion]
