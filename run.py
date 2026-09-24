@@ -284,7 +284,8 @@ def webcam_worker(shared_state):
             if frame is None:
                 continue
                 
-            print(f"CAMERA_FRAME_RECEIVED | timestamp={time.time()} | frame_size={len(img_data)} | decoded_width={frame.shape[1]} | decoded_height={frame.shape[0]}", flush=True)
+            if frame_count % 30 == 0:
+                print(f"CAMERA_FRAME_RECEIVED | timestamp={time.time()} | frame_size={len(img_data)} | decoded_width={frame.shape[1]} | decoded_height={frame.shape[0]}", flush=True)
                 
             shared_state['camera_connected'] = True
             h_orig, w_orig = frame.shape[:2]
@@ -294,24 +295,43 @@ def webcam_worker(shared_state):
             frame_count += 1
             shared_state['camera_frame_count'] = frame_count
 
-            if frame_count % 30 == 0:
-                now = time.time()
-                fps = 30.0 / (now - fps_start_time + 1e-6)
+            now = time.time()
+            if now - fps_start_time >= 1.0:
+                fps = (frame_count - shared_state.get('last_fps_frame_count', 0)) / (now - fps_start_time)
                 shared_state['camera_fps'] = round(fps, 1)
                 fps_start_time = now
+                shared_state['last_fps_frame_count'] = frame_count
 
             frame_small = cv2.resize(frame, (320, 240))
 
             t0 = time.perf_counter()
-            face_feats, face_status, face_meta = extract_face_features(frame_small)
-            eye_feats, eye_status = extract_eye_features(frame_small)
+            try:
+                import mediapipe as mp
+                from src.face_utils import face_mesh
+                
+                rgb_frame = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
+                results = face_mesh.process(rgb_frame) if face_mesh else None
+                
+                if results and results.multi_face_landmarks:
+                    landmarks = results.multi_face_landmarks[0].landmark
+                    face_feats, face_status, face_meta = extract_face_features(frame_small, landmarks=landmarks)
+                    eye_feats, eye_status = extract_eye_features(frame_small, landmarks=landmarks)
+                    face_meta["count"] = len(results.multi_face_landmarks)
+                else:
+                    face_feats, face_status, face_meta = extract_face_features(frame_small)
+                    eye_feats, eye_status = extract_eye_features(frame_small)
+            except Exception:
+                face_feats, face_status, face_meta = extract_face_features(frame_small)
+                eye_feats, eye_status = extract_eye_features(frame_small)
+                
             lat = (time.perf_counter() - t0) * 1000
 
             shared_state['face_status'] = face_status
             shared_state['eye_status'] = eye_status
 
             if face_status == "DETECTED":
-                print(f"FACE_DETECTION | faces={face_meta.get('count', 1)}", flush=True)
+                if frame_count % 30 == 0:
+                    print(f"FACE_DETECTION | faces={face_meta.get('count', 1)}", flush=True)
                 face_detection_count += 1
                 shared_state['face_last_valid_time'] = time.time()
                 shared_state['face_sample_id'] = face_detection_count
@@ -340,7 +360,8 @@ def webcam_worker(shared_state):
                         preds = fer_model(face_input, training=False).numpy()[0]
                         probs = {fer_classes[i]: float(preds[i]) for i in range(len(fer_classes))}
                         top_emotion = fer_classes[np.argmax(preds)].upper()
-                        print(f"FACIAL_EXPRESSION | expression={top_emotion} | confidence={preds[np.argmax(preds)]:.4f}", flush=True)
+                        if frame_count % 30 == 0:
+                            print(f"FACIAL_EXPRESSION | expression={top_emotion} | confidence={preds[np.argmax(preds)]:.4f}", flush=True)
                         shared_state['face_emotion_probs'] = probs
                         shared_state['face_emotion_label'] = top_emotion
                         shared_state['face_fer_inference_count'] = shared_state.get('face_fer_inference_count', 0) + 1
@@ -356,7 +377,8 @@ def webcam_worker(shared_state):
                 shared_state['face_count'] = 0
 
             if eye_status == "DETECTED":
-                print(f"EYE_FEATURES | dimension={len(eye_feats)} | timestamp={time.time()}", flush=True)
+                if frame_count % 30 == 0:
+                    print(f"EYE_FEATURES | dimension={len(eye_feats)} | timestamp={time.time()}", flush=True)
                 eye_detection_count += 1
                 shared_state['eye_last_valid_time'] = time.time()
                 shared_state['eye_sample_id'] = eye_detection_count
@@ -723,7 +745,8 @@ def inference_worker(shared_state):
             # Confidence for a heuristic score
             c_confidence = max(c_stress_prob, c_nonstress_prob)
             
-            print(f"CAMERA_PREDICTION | stress_probability={c_stress_prob:.4f} | nonstress_probability={c_nonstress_prob:.4f} | confidence={c_confidence:.4f}", flush=True)
+            # if shared_state.get('camera_frame_count', 0) % 30 == 0:
+            #     print(f"CAMERA_PREDICTION | stress_probability={c_stress_prob:.4f} | nonstress_probability={c_nonstress_prob:.4f} | confidence={c_confidence:.4f}", flush=True)
             
             shared_state['camera_stress_prob'] = round(c_stress_prob, 4)
             shared_state['camera_nonstress_prob'] = round(c_nonstress_prob, 4)

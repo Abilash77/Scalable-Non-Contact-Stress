@@ -18,7 +18,8 @@
             --status-neutral: #607d8b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-        body { background-color: var(--bg-color); color: var(--text-primary); padding: 20px; font-size: 14px; }
+        html { overflow-y: auto; }
+        body { background-color: var(--bg-color); color: var(--text-primary); padding: 20px; font-size: 14px; min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
         .dashboard-container { max-width: 1600px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
         header { display: flex; justify-content: space-between; align-items: center; background-color: var(--panel-bg); padding: 15px 25px; border-radius: 8px; border-left: 4px solid var(--accent-cyan); }
         .header-title h1 { font-size: 1.5em; color: var(--accent-cyan); margin-bottom: 5px; }
@@ -300,8 +301,8 @@
         <div class="panel keyboard-input-panel">
             <div class="panel-header"><span>KEYBOARD INPUT</span><span id="keyboard-ready-status" style="color: var(--status-neutral);">WAITING</span></div>
             <div class="panel-body">
-                <div class="keyboard-instruction">Type the sentence naturally using your keyboard.</div>
-                <div class="keyboard-instruction">Example: "I am working on my project today."</div>
+                <div class="keyboard-instruction">Type naturally. Each sample represents a short 4-keystroke window; about 40 key events are needed for 10 samples.</div>
+                <div class="keyboard-instruction">Example: "I am testing the keyboard input."</div>
                 <textarea id="keyboard-input" placeholder="I am working on my project today." aria-label="Keyboard input"></textarea>
                 <div class="keyboard-progress" id="keyboard-sample-progress">Keyboard samples: 0/10</div>
             </div>
@@ -518,12 +519,13 @@
                 y: (src.clientY - rect.top) * (hwCanvas.height / rect.height)
             };
         }
-        hwCanvas.addEventListener('mousedown', e => { drawing = true; const p = canvasPos(e); hwStrokes.push([hwPoint(p)]); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
-        hwCanvas.addEventListener('mousemove', e => { if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
+        let lastP = null;
+        hwCanvas.addEventListener('mousedown', e => { drawing = true; const p = canvasPos(e); lastP = p; hwStrokes.push([hwPoint(p)]); });
+        hwCanvas.addEventListener('mousemove', e => { if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.beginPath(); hwCtx.moveTo(lastP.x, lastP.y); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); lastP = p; });
         hwCanvas.addEventListener('mouseup', () => { drawing = false; checkAutoSubmit(); });
         hwCanvas.addEventListener('mouseleave', () => { drawing = false; checkAutoSubmit(); });
-        hwCanvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = canvasPos(e); hwStrokes.push([hwPoint(p)]); hwCtx.beginPath(); hwCtx.moveTo(p.x, p.y); });
-        hwCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); });
+        hwCanvas.addEventListener('touchstart', e => { e.preventDefault(); drawing = true; const p = canvasPos(e); lastP = p; hwStrokes.push([hwPoint(p)]); });
+        hwCanvas.addEventListener('touchmove', e => { e.preventDefault(); if (!drawing) return; const p = canvasPos(e); hwStrokes[hwStrokes.length - 1].push(hwPoint(p)); hwCtx.beginPath(); hwCtx.moveTo(lastP.x, lastP.y); hwCtx.lineTo(p.x, p.y); hwCtx.stroke(); lastP = p; });
         hwCanvas.addEventListener('touchend', () => { drawing = false; checkAutoSubmit(); });
         
         function checkAutoSubmit() {
@@ -563,21 +565,27 @@
 
             const img = hwCanvas.toDataURL('image/png');
             const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 3000);
+            const id = setTimeout(() => controller.abort(), 15000); // Increased timeout to 15s
 
             fetch('/upload_handwriting', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ image: img, strokes: hwStrokes }),
                 signal: controller.signal
-            }).then(r => r.json()).then(() => {
+            }).then(async r => {
+                if (!r.ok) {
+                    const txt = await r.text();
+                    throw new Error(txt || `HTTP ${r.status}`);
+                }
+                return r.json();
+            }).then(() => {
                 clearTimeout(id);
                 addLog('Handwriting sample submitted');
                 btnSubmit.innerText = 'RECEIVED';
                 setTimeout(() => { btnSubmit.innerText = 'Submit Sample'; btnSubmit.disabled = false; }, 1500);
-            }).catch(() => {
+            }).catch((err) => {
                 clearTimeout(id);
-                addLog('HANDWRITING ERROR');
+                addLog('HANDWRITING ERROR: ' + err.message);
                 btnSubmit.innerText = 'ERROR';
                 setTimeout(() => { btnSubmit.innerText = 'Submit Sample'; btnSubmit.disabled = false; }, 1500);
             });
@@ -689,44 +697,50 @@
                 btnStart.innerText = 'STARTING...';
                 btnStart.disabled = true;
                 btnStop.disabled = true;
+                startRemoteCapture(); // Start immediately for responsiveness
             } else if (action === 'stop') {
                 btnStop.innerText = 'STOPPING...';
                 btnStart.disabled = true;
                 btnStop.disabled = true;
+                stopRemoteCapture(); // Stop immediately
             }
 
-            const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 2000);
-
+            // Removed AbortController because PDF generation takes > 2s
             fetch('/api/control', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(participantDetails ? { action, participant: participantDetails } : { action }),
-                signal: controller.signal
-            }).then(r => r.json()).then((res) => {
-                clearTimeout(id);
+                body: JSON.stringify(participantDetails ? { action, participant: participantDetails } : { action })
+            }).then(async r => {
+                if (!r.ok) {
+                    const txt = await r.text();
+                    throw new Error(txt || `HTTP ${r.status}`);
+                }
+                return r.json();
+            }).then((res) => {
                 if (action === 'start') {
                     addLog('Monitoring started');
-                    startRemoteCapture();
                 }
                 if (action === 'stop') {
                     addLog('Monitoring stopped');
-                    stopRemoteCapture();
                     if (res.report_url) {
                         document.getElementById('pdf-view-btn').href = res.report_url;
                         document.getElementById('pdf-download-btn').href = res.report_url;
                         document.getElementById('pdf-summary-status').innerText = 'Final Prediction: ' + (res.session_info ? res.session_info.final_prediction : 'N/A');
                         document.getElementById('pdf-modal').style.display = 'flex';
+                        const iframe = document.querySelector('#pdf-modal iframe');
+                        if (iframe) iframe.src = res.report_url;
                     }
                 }
                 if (action === 'reset') {
                     clearCanvasOnly();
                     addLog('Session reset');
                 }
-            }).catch(() => {
-                clearTimeout(id);
-                addLog('CONNECTION ERROR');
-                if (action === 'start') btnStart.innerText = originalStartText;
+            }).catch((e) => {
+                addLog('CONNECTION ERROR: ' + e.message);
+                if (action === 'start') {
+                    btnStart.innerText = originalStartText;
+                    stopRemoteCapture();
+                }
                 if (action === 'stop') btnStop.innerText = originalStopText;
             }).finally(() => {
                 controlBusy = false;
@@ -751,9 +765,14 @@
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({events: payload})
+                    }).then(async r => {
+                        if (!r.ok) {
+                            const text = await r.text();
+                            throw new Error(text || `HTTP ${r.status}`);
+                        }
                     }).catch(e => console.error("Key upload error", e));
                 }
-            }, 500);
+            }, 200);
 
             // Request Camera & Mic
             navigator.mediaDevices.getUserMedia({ video: true, audio: true })
@@ -780,18 +799,28 @@
                     offscreenCanvas.height = 240;
                     const ctx = offscreenCanvas.getContext('2d');
 
+                    let isFrameUploading = false;
                     videoInterval = setInterval(() => {
-                        if (cameraPreview.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+                        if (cameraPreview.readyState >= 2 && !isFrameUploading) { // HAVE_CURRENT_DATA or higher
+                            isFrameUploading = true;
                             ctx.drawImage(cameraPreview, 0, 0, 320, 240);
                             const b64 = offscreenCanvas.toDataURL('image/jpeg', 0.7);
                             fetch('/api/upload_frame', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify({image: b64})
-                            }).catch(e => console.error("Frame upload error", e));
+                            }).then(async r => {
+                                if (!r.ok) {
+                                    const text = await r.text();
+                                    throw new Error(text || `HTTP ${r.status}`);
+                                }
+                                isFrameUploading = false;
+                            }).catch(e => {
+                                console.error("Frame upload error", e);
+                                isFrameUploading = false;
+                            });
                         }
-                    }, 333); // ~3 fps
-
+                    }, 100); // 10 fps (latest-frame-wins)
                     // Audio Setup
                     audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
                     const source = audioContext.createMediaStreamSource(stream);
@@ -824,6 +853,11 @@
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
                                 body: JSON.stringify({audio: b64})
+                            }).then(async r => {
+                                if (!r.ok) {
+                                    const text = await r.text();
+                                    throw new Error(text || `HTTP ${r.status}`);
+                                }
                             }).catch(e => console.error("Audio upload error", e));
                         }
                     }, 1000);

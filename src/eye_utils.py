@@ -18,21 +18,23 @@ except ImportError:
 def get_distance(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
-def extract_eye_features(frame):
+def extract_eye_features(frame, landmarks=None):
     """
     Extracts 5 eye-specific features using MediaPipe Iris Landmarks.
     Features: pupil_size_left, pupil_size_right, gaze_x, gaze_y, eye_closure
     """
-    if face_mesh is None or frame is None or frame.size == 0:
-        return np.zeros(5), "CAMERA_UNAVAILABLE"
+    if landmarks is None:
+        if face_mesh is None or frame is None or frame.size == 0:
+            return np.zeros(5), "CAMERA_UNAVAILABLE"
+            
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb_frame)
         
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_frame)
-    
-    if not results.multi_face_landmarks:
-        return np.zeros(5), "NO_FACE_DETECTED"
+        if not results.multi_face_landmarks:
+            return np.zeros(5), "NO_FACE_DETECTED"
+            
+        landmarks = results.multi_face_landmarks[0].landmark
         
-    landmarks = results.multi_face_landmarks[0].landmark
     h, w, _ = frame.shape
     pts = np.array([(lm.x * w, lm.y * h) for lm in landmarks])
     

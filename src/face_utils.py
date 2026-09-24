@@ -17,7 +17,7 @@ except ImportError:
 def get_distance(p1, p2):
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
-def extract_face_features(img_array):
+def extract_face_features(img_array, landmarks=None):
     """
     Extracts 12 facial features using MediaPipe Face Mesh.
     Features: EAR_left, EAR_right, Pitch, Yaw, Roll, MAR (Mouth Aspect Ratio),
@@ -29,16 +29,18 @@ def extract_face_features(img_array):
         
     frame = img_array
 
-    if face_mesh is None or frame is None:
-        return np.zeros(12), "CAMERA_UNAVAILABLE", {}
-        
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb_frame)
-    
-    if not results.multi_face_landmarks:
-        return np.zeros(12), "NO_FACE_DETECTED", {"count": 0}
-        
-    landmarks = results.multi_face_landmarks[0].landmark
+    if landmarks is None:
+        if face_mesh is None or frame is None:
+            return np.zeros(12), "CAMERA_UNAVAILABLE", {}
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb_frame)
+        if not results.multi_face_landmarks:
+            return np.zeros(12), "NO_FACE_DETECTED", {"count": 0}
+        landmarks = results.multi_face_landmarks[0].landmark
+        face_count = len(results.multi_face_landmarks)
+    else:
+        face_count = 1
+
     h, w, _ = frame.shape
     pts = np.array([(lm.x * w, lm.y * h) for lm in landmarks])
     
@@ -104,7 +106,7 @@ def extract_face_features(img_array):
     y_min, y_max = int(min(ys)), int(max(ys))
     
     metadata = {
-        "count": len(results.multi_face_landmarks),
+        "count": face_count,
         "bbox": [x_min, y_min, x_max - x_min, y_max - y_min],
         "confidence": "N/A"
     }
