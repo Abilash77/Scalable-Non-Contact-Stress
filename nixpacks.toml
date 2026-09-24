@@ -1,2 +1,5 @@
 [phases.build]
-cmds = ["python -m pip install --no-deps mediapipe==0.10.21"]
+cmds = [
+	"python -m pip install --no-deps mediapipe==0.10.21",
+	"python -c \"import cv2, mediapipe; from src.face_utils import face_mesh; from pathlib import Path; assert 'GUI:                           NONE' in cv2.getBuildInformation(); assert face_mesh is not None; assert Path('results/checkpoints/fer2013_facial_emotion.keras').is_file(); assert Path('results/checkpoints/speech_stress_model.joblib').is_file(); assert Path('results/checkpoints/speech_scaler.joblib').is_file(); print('RAILWAY_RUNTIME_DEPENDENCIES_PASS')\""
+]
