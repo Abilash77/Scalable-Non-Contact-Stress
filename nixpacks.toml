@@ -1,0 +1,3 @@
+[phases.uninstall_gui_opencv]
+dependsOn = ['install']
+cmds = ['/opt/venv/bin/pip uninstall -y opencv-python opencv-contrib-python']

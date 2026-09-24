@@ -24,15 +24,5 @@ scikit-image>=0.21.0
 Flask>=2.0.0
 gunicorn>=20.1.0
 reportlab==5.0.0
-opencv-contrib-python-headless
-absl-py
-attrs>=19.1.0
-flatbuffers>=2.0
-jax
-jaxlib
-protobuf<5,>=4.25.3
-sounddevice>=0.4.4
-sentencepiece
-cffi
-ml_dtypes>=0.5.0
-mediapipe==0.10.21 --no-deps
+mediapipe==0.10.21
+opencv-python-headless
