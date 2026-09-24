@@ -260,6 +260,7 @@ def webcam_worker(shared_state):
             shared_state['eye_detection_count'] = 0
             shared_state['face_sample_id'] = 0
             shared_state['eye_sample_id'] = 0
+            fps_start_time = time.time()
         if not shared_state.get('is_live_monitoring', False):
             shared_state['camera_connected'] = False
             shared_state['face_status'] = "WAITING_FOR_CAMERA"
@@ -285,9 +286,7 @@ def webcam_worker(shared_state):
                 
             print(f"CAMERA_FRAME_RECEIVED | timestamp={time.time()} | frame_size={len(img_data)} | decoded_width={frame.shape[1]} | decoded_height={frame.shape[0]}", flush=True)
                 
-            frame_timestamp = time.time()
             shared_state['camera_connected'] = True
-            shared_state['last_frame_timestamp'] = frame_timestamp
             h_orig, w_orig = frame.shape[:2]
             shared_state['camera_width'] = w_orig
             shared_state['camera_height'] = h_orig
@@ -1099,6 +1098,7 @@ def build_status_payload(state):
         'feature_only_modalities': [m for m in ['speech', 'facial', 'eye_pupil', 'handwriting'] if m not in trained_mods_raw and not (m == 'speech' and 'audio' in trained_mods_raw)],
         'window_size': 10,
         'timestamp': _dt.datetime.now().isoformat(timespec='seconds'),
+        'server_time': time.time(),
         'latency': {
             'feature_extraction_ms': feature_extraction_ms,
             'model_inference_ms': model_inference_ms,
@@ -1577,6 +1577,7 @@ def api_upload_frame():
     if manager_dict.get('is_live_monitoring') and data and 'image' in data:
         manager_dict['camera_connected'] = True
         manager_dict['remote_frame_b64'] = data['image']
+        manager_dict['last_frame_timestamp'] = time.time()
     return jsonify({"status": "ok"})
 
 @app.route('/api/upload_audio', methods=['POST'])
