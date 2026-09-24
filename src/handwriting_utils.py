@@ -37,22 +37,14 @@ def extract_handwriting_features(img_path=None, img_array=None, strokes=None):
         # NOTE: cv2.ximgproc.thinning is the preferred implementation when available.
         skeleton = cv2.ximgproc.thinning(binary)
     except (AttributeError, cv2.error):
-        # NOTE: The current fallback is a degraded substitute.
-        # It is NOT equivalent to the original ximgproc skeletonization implementation.
-        # Any latency measurement using this fallback must be identified as fallback-path latency.
-        skeleton = np.zeros(binary.shape, np.uint8)
-        eroded = np.zeros(binary.shape, np.uint8)
-        temp = np.zeros(binary.shape, np.uint8)
-        kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-        img_copy = binary.copy()
-        while True:
-            cv2.erode(img_copy, kernel, eroded)
-            cv2.dilate(eroded, kernel, temp)
-            cv2.subtract(img_copy, temp, temp)
-            cv2.bitwise_or(skeleton, temp, skeleton)
-            img_copy = eroded.copy()
-            if cv2.countNonZero(img_copy) == 0:
-                break
+        try:
+            from skimage.morphology import skeletonize
+            # skimage skeletonize expects boolean or 0/1 array, returns boolean array
+            skeleton_bool = skeletonize(binary > 0)
+            skeleton = (skeleton_bool * 255).astype(np.uint8)
+        except ImportError:
+            # Absolute fallback if skimage is not available (should not happen based on requirements.txt)
+            skeleton = np.zeros(binary.shape, np.uint8)
     
     stroke_widths = dist_transform[skeleton > 0]
     stroke_width_mean = np.mean(stroke_widths) if len(stroke_widths) > 0 else 0.0
