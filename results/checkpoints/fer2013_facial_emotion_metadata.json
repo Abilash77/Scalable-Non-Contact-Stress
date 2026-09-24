@@ -1,0 +1,28 @@
+{
+    "dataset": "FER-2013",
+    "dataset_path": "c:\\Users\\Abilash\\OneDrive\\Documents\\et-based-stress-classification\\data\\fer2013\\raw",
+    "training_images": 28709,
+    "validation_images": 7178,
+    "classes": [
+        "angry",
+        "disgust",
+        "fear",
+        "happy",
+        "neutral",
+        "sad",
+        "surprise"
+    ],
+    "image_size": [
+        48,
+        48,
+        3
+    ],
+    "architecture": "MobileNetV2 (alpha=0.35) Fine-Tuned",
+    "epochs": 3,
+    "batch_size": 64,
+    "training_time_seconds": 376.37,
+    "final_training_accuracy": 35.79,
+    "validation_accuracy": 35.08,
+    "test_accuracy": 35.08,
+    "checkpoint_path": "c:\\Users\\Abilash\\OneDrive\\Documents\\et-based-stress-classification\\results\\checkpoints\\fer2013_facial_emotion.keras"
+}

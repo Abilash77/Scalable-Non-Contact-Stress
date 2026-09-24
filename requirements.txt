@@ -24,3 +24,6 @@ pyaudio>=0.2.14
 pynput>=1.7.6
 scikit-image>=0.21.0
 opencv-python>=4.8.0
+
+Flask>=2.0.0
+gunicorn>=20.1.0

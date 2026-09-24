@@ -171,14 +171,34 @@ def audio_worker(shared_state):
                 import base64
                 audio_bytes = base64.b64decode(b64_audio)
                 audio_data = np.frombuffer(audio_bytes, dtype=np.float32)
-                if audio_data.size == 0 or float(np.sqrt(np.mean(audio_data ** 2))) <= 1e-5:
+                
+                # Diagnostic variables
+                audio_recv = audio_data.size > 0
+                audio_samples = audio_data.size
+                audio_duration = round(audio_samples / RATE, 2) if RATE else 0
+                
+                if not audio_recv or float(np.sqrt(np.mean(audio_data ** 2))) <= 1e-5:
                     shared_state['audio_features'] = None
                     continue
                 
                 t0 = time.perf_counter()
                 feats = extract_audio_features(audio_segment=audio_data, sr=RATE)
                 lat = (time.perf_counter() - t0) * 1000
-                if np.count_nonzero(feats) == 0:
+                
+                feat_valid = np.count_nonzero(feats) > 0
+                finite_feats = np.all(np.isfinite(feats))
+                
+                print("SPEECH DEBUG")
+                print(f"audio_received = {audio_recv}")
+                print(f"audio_samples = {audio_samples}")
+                print(f"audio_duration = {audio_duration}")
+                print(f"feature_extraction = {'PASS' if feat_valid else 'FAIL'}")
+                print(f"feature_shape = {feats.shape}")
+                print(f"finite_features = {finite_feats}")
+                print("speech_model_available = False")
+                print("speech_prediction = NONE")
+                
+                if not feat_valid:
                     shared_state['audio_features'] = None
                     continue
 
@@ -187,7 +207,7 @@ def audio_worker(shared_state):
                 shared_state['audio_features_summary'] = {
                     'mfcc_1_4': [round(float(v), 2) for v in feats[:4]],
                     'rms_dbfs': round(float(20 * np.log10(np.sqrt(np.mean(audio_data ** 2)) + 1e-9)), 1),
-                    'seconds': round(audio_data.size / RATE, 2),
+                    'seconds': audio_duration,
                 }
                 shared_state['audio_sample_id'] = sample_id
                 shared_state['audio_last_sample_time'] = time.time()
@@ -448,7 +468,11 @@ def load_keyboard_predictor(shared_state):
     shared_state['checkpoint_name'] = meta['model_file']
     shared_state['model_name'] = meta.get('model_name', '')
     shared_state['dataset_name'] = meta.get('dataset_name', 'Freihaut & Goeritz (2021)')
-    shared_state['trained_modalities'] = _json.dumps(['keyboard'])
+    
+    t_mods = ['keyboard']
+    # We will update t_mods in inference_worker once both models are loaded.
+    shared_state['trained_modalities'] = _json.dumps(t_mods)
+    
     shared_state['decision_threshold'] = predictor.threshold
     shared_state['model_test_metrics'] = _json.dumps({
         k: round(v, 4) for k, v in meta.get('test_metrics', {}).items() if isinstance(v, float)})
@@ -461,12 +485,40 @@ def load_keyboard_predictor(shared_state):
     return predictor
 
 
+def load_speech_predictor(shared_state):
+    import os, joblib, json
+    meta_path = os.path.join('results', 'checkpoints', 'speech_model_metadata.json')
+    model_path = os.path.join('results', 'checkpoints', 'speech_stress_model.joblib')
+    scaler_path = os.path.join('results', 'checkpoints', 'speech_scaler.joblib')
+    if not (os.path.exists(model_path) and os.path.exists(scaler_path)):
+        return None, None
+    try:
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        print(f"[MODEL] Speech model loaded: {meta.get('model_type')} (RAVDESS Emotion -> Stress proxy)")
+        return model, scaler
+    except Exception as e:
+        print(f"Error loading speech model: {e}")
+        return None, None
+
+
 def inference_worker(shared_state):
     import datetime
     import json as _json
 
     predictor = load_keyboard_predictor(shared_state)
     is_trained = predictor is not None
+    
+    speech_model, speech_scaler = load_speech_predictor(shared_state)
+    speech_is_trained = speech_model is not None
+    
+    import json as _json
+    t_mods = []
+    if is_trained: t_mods.append('keyboard')
+    if speech_is_trained: t_mods.append('speech')
+    shared_state['trained_modalities'] = _json.dumps(t_mods)
 
     T = NUM_TIMESTEPS
     buffers = {m: np.zeros((T, d), dtype=np.float32) for m, d in FEATURE_ONLY_BUFFERS.items()}
@@ -541,10 +593,13 @@ def inference_worker(shared_state):
             buffer_fills['handwriting'] = 0
             last_valid_time['handwriting'] = 0.0
             shared_state['handwriting_clear_flag'] = False
+        new_audio_sample = False
         for m, (feat_key, id_key) in sources.items():
             feats = shared_state.get(feat_key)
             sid = int(shared_state.get(id_key, 0) or 0)
             if feats is not None and sid > last_sample_ids[m]:
+                if m == 'audio':
+                    new_audio_sample = True
                 arr = np.asarray(feats, dtype=np.float32)
                 last_sample_ids[m] = sid
                 if arr.shape == (FEATURE_ONLY_BUFFERS[m],) and np.count_nonzero(arr) > 0:
@@ -573,6 +628,29 @@ def inference_worker(shared_state):
 
         predicted_now = False
         camera_predicted_now = False
+        speech_predicted_now = False
+        
+        if speech_is_trained and new_audio_sample and buffer_fills['audio'] > 0:
+            try:
+                a_feats = np.asarray(shared_state['audio_features'], dtype=np.float32).reshape(1, -1)
+                a_feats_166 = a_feats[:, :166]  # Match the 166 features from the RAVDESS processed dataset
+                a_feats_scaled = speech_scaler.transform(a_feats_166)
+                s_probs = speech_model.predict_proba(a_feats_scaled)[0]
+                s_stress_prob = float(s_probs[1])
+                s_nonstress_prob = float(s_probs[0])
+                s_pred_label = 1 if s_stress_prob >= 0.5 else 0
+                s_confidence = s_stress_prob if s_pred_label == 1 else s_nonstress_prob
+                
+                shared_state['speech_stress_prob'] = round(s_stress_prob, 4)
+                shared_state['speech_nonstress_prob'] = round(s_nonstress_prob, 4)
+                shared_state['speech_confidence'] = round(s_confidence, 4)
+                shared_state['speech_pred'] = s_pred_label
+                shared_state['speech_predictions_available'] = True
+                speech_predicted_now = True
+            except Exception as e:
+                with open('error.log', 'a') as f:
+                    f.write(f"Speech prediction error: {e}\n")
+                print(f"Speech prediction error: {e}")
         
         if is_trained and new_keyboard_sample and len(window) >= T:
             X = np.asarray(window[-T:], dtype=np.float32)[None]
@@ -655,7 +733,7 @@ def inference_worker(shared_state):
             shared_state['camera_predictions_available'] = True
             camera_predicted_now = True
 
-        if predicted_now or camera_predicted_now:
+        if predicted_now or camera_predicted_now or speech_predicted_now:
             now_ts = datetime.datetime.now().strftime("%H:%M:%S")
             hist_entry = {'timestamp': now_ts}
             if shared_state.get('camera_predictions_available'):
@@ -670,6 +748,11 @@ def inference_worker(shared_state):
                 hist_entry['keyboard_stress_prob_pct'] = round(shared_state.get('keyboard_stress_prob', 0) * 100, 1)
                 hist_entry['keyboard_confidence'] = shared_state.get('keyboard_confidence')
                 
+            if shared_state.get('speech_predictions_available'):
+                hist_entry['speech_prediction'] = 'STRESS' if shared_state.get('speech_pred') == 1 else 'NON-STRESS'
+                hist_entry['speech_stress_prob_pct'] = round(shared_state.get('speech_stress_prob', 0) * 100, 1)
+                hist_entry['speech_confidence'] = shared_state.get('speech_confidence')
+                
             prediction_history.append(hist_entry)
             prediction_history = prediction_history[-MAX_HISTORY:]
             shared_state['prediction_timestamp'] = now_ts
@@ -682,9 +765,22 @@ def inference_worker(shared_state):
         shared_state['unique_samples'] = us
         shared_state['inference_counts'] = ic
 
-        # Only the keyboard feeds the stress model.
-        fusion_mask = [0.0, 0.0, 1.0 if (is_trained and buffer_fills['keystroke'] >= T) else 0.0, 0.0, 0.0]
-        attention = {'keyboard': 1.0 if fusion_mask[2] else 0.0, 'speech': 0.0, 'facial': 0.0,
+        # Keyboard and Speech feed the stress model.
+        fusion_mask = [
+            1.0 if (speech_is_trained and buffer_fills['audio'] > 0) else 0.0,
+            0.0, 
+            1.0 if (is_trained and buffer_fills['keystroke'] >= T) else 0.0, 
+            0.0, 
+            0.0
+        ]
+        sum_f = sum(fusion_mask)
+        if sum_f > 0:
+            att_s = fusion_mask[0] / sum_f
+            att_k = fusion_mask[2] / sum_f
+        else:
+            att_s = att_k = 0.0
+            
+        attention = {'keyboard': att_k, 'speech': att_s, 'facial': 0.0,
                      'eye_pupil': 0.0, 'handwriting': 0.0}
         shared_state['modality_weights'] = _json.dumps(attention)
         shared_state['reliabilities'] = _json.dumps(attention)
@@ -752,6 +848,12 @@ def inference_worker(shared_state):
                     input_str = 'FACE DETECTED' if hw_st == 'DETECTED' else 'NO FACE DETECTED'
                 else:
                     input_str = 'EYES DETECTED' if hw_st == 'DETECTED' else 'WAITING FOR EYE INPUT'
+            elif mod_name == 'speech':
+                status_str = 'ACTIVE' if rm_active else 'FEATURE EXTRACTION ONLY'
+                if status_str == 'FEATURE EXTRACTION ONLY' and fill == 0:
+                    status_str = 'NO INPUT'
+                feat_ready = fill > 0
+                input_str = 'RECEIVING AUDIO' if fill > 0 else 'WAITING FOR MICROPHONE'
             elif mod_name == 'keyboard' and shared_state.get('keyboard_status') == 'RECEIVING':
                 status_str, input_str, feat_ready = 'WAITING', 'KEEP TYPING', fill > 0
             else:
@@ -766,7 +868,7 @@ def inference_worker(shared_state):
                 'feature_dimension': mod_shapes[mod_name],
                 'last_sample_time': shared_state.get(sample_time_keys[mod_name], 0.0),
                 'extraction_status': 'READY' if feat_ready else 'WAITING',
-                'role': 'STRESS MODEL INPUT' if mod_name == 'keyboard' else 'FEATURE EXTRACTION ONLY',
+                'role': 'STRESS MODEL INPUT' if (mod_name == 'keyboard' or (mod_name == 'speech' and rm_active)) else 'FEATURE EXTRACTION ONLY',
             }
         shared_state['runtime_modality_status'] = _json.dumps(runtime_status)
 
@@ -994,7 +1096,7 @@ def build_status_payload(state):
             'decision_threshold': state.get('decision_threshold'),
             'test_metrics': _parse_json_field(state.get('model_test_metrics'), {}),
         },
-        'feature_only_modalities': ['speech', 'facial', 'eye_pupil', 'handwriting'],
+        'feature_only_modalities': [m for m in ['speech', 'facial', 'eye_pupil', 'handwriting'] if m not in trained_mods_raw and not (m == 'speech' and 'audio' in trained_mods_raw)],
         'window_size': 10,
         'timestamp': _dt.datetime.now().isoformat(timespec='seconds'),
         'latency': {
@@ -1364,6 +1466,23 @@ def _finalize_session_report():
     except:
         mod_status = {}
         
+    def _ensure_historical(mod_name, count_key, max_fill, role):
+        if mod_name not in mod_status:
+            mod_status[mod_name] = {}
+        c = manager_dict.get(count_key, 0)
+        if c > 0:
+            mod_status[mod_name]['buffer_fill'] = min(c, max_fill)
+            if mod_status[mod_name].get('status', 'NO INPUT') in ('NO INPUT', 'WAITING'):
+                mod_status[mod_name]['status'] = 'ACTIVE'
+            mod_status[mod_name]['features_ready'] = True
+            mod_status[mod_name]['role'] = role
+
+    _ensure_historical('keyboard', 'keyboard_event_count', 10, 'STRESS MODEL INPUT')
+    _ensure_historical('speech', 'audio_sample_count', 10, 'EMOTION-DERIVED PROXY INPUT')
+    _ensure_historical('facial', 'face_detection_count', 10, 'FEATURE EXTRACTION ONLY')
+    _ensure_historical('eye_pupil', 'eye_detection_count', 10, 'FEATURE EXTRACTION ONLY')
+    _ensure_historical('handwriting', 'handwriting_submission_count', 10, 'FEATURE EXTRACTION ONLY')
+        
     session_data = {
         'session_id': session_id,
         'participant': manager_dict.get('participant_details', {}),
@@ -1514,6 +1633,10 @@ def video_feed():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "ok", "message": "Healthy"})
 
 if __name__ == '__main__':
     
