@@ -1,2 +1,2 @@
 [phases.build]
-cmds = ["python -m pip uninstall -y opencv-python opencv-contrib-python", "python -m pip install --no-deps --force-reinstall opencv-contrib-python-headless"]
+cmds = ["python -m pip install --no-deps mediapipe==0.10.21"]
